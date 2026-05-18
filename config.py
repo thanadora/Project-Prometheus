@@ -145,3 +145,16 @@ SEASON_WEATHER_PROBS = {
 SOIL_MOISTURE_MIN  = 0.15
 SOIL_MOISTURE_MAX  = 1
 SOIL_MOISTURE_INIT = 1
+
+# -----------------------------
+# MIGRATION
+# -----------------------------
+# Part des agents devant voter "en détresse" pour déclencher la migration
+MIGRATION_VOTE_THRESHOLD  = 0.90   # 80 %
+
+# Seuils individuels : un agent vote "en détresse" si l'une de ces conditions est vraie
+MIGRATION_DISTRESS_ENERGY = 5.0   # énergie faible
+MIGRATION_DISTRESS_THIRST = 5.0   # soif critique
+
+# Intervalle minimum entre deux migrations (en ticks) pour éviter les migrations en boucle
+MIGRATION_COOLDOWN        = 200

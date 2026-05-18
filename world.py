@@ -30,6 +30,14 @@ from config import (
     BIOME_DESERT,
     BIOME_PRAIRIE,
     BIOME_FOREST,
+    MIGRATION_VOTE_THRESHOLD,
+    MIGRATION_DISTRESS_ENERGY,
+    MIGRATION_DISTRESS_THIRST,
+    MIGRATION_COOLDOWN,
+    MAX_AGE
+
+
+
 )
 
 from entities import Agent
@@ -50,6 +58,8 @@ class World:
     _next_id: int = field(default=0, repr=False)
     weather: int = WEATHER_CLEAR
     soil_moisture: float = SOIL_MOISTURE_INIT
+    migration_count: int = 0          # nombre de migrations effectuées
+    last_migration_tick: int = -9999  # tick de la dernière migration
 
     def next_id(self):
         self._next_id += 1
@@ -245,9 +255,120 @@ def remove_dead_agents(world):
     world.agents = alive_agents
 
 # -----------------------------
+# MIGRATION
+# -----------------------------
+def _reachable_land(world, start_x, start_y):
+    """Flood-fill : retourne l'ensemble des cases terrestres accessibles depuis (start_x, start_y)."""
+    visited = set()
+    stack = [(start_x, start_y)]
+    while stack:
+        x, y = stack.pop()
+        if (x, y) in visited:
+            continue
+        if not (0 <= x < world.width and 0 <= y < world.height):
+            continue
+        if not world.food.is_walkable(x, y):
+            continue
+        visited.add((x, y))
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            stack.append((x + dx, y + dy))
+    return visited
+
+
+def check_migration(world):
+    """
+    Vérifie si les conditions de migration sont remplies.
+    Retourne True et déclenche la migration si c'est le cas.
+    """
+    
+    agents = [a for a in world.agents if a.alive]
+    if not agents:
+        return False
+    if len(agents) > 5:
+        return False
+
+    # Cooldown : pas deux migrations trop rapprochées
+    if world.tick - world.last_migration_tick < MIGRATION_COOLDOWN:
+        return False
+
+    # --- Vote individuel ---
+    # Un agent vote "en détresse" s'il manque d'énergie OU de thirst
+    votes = sum(
+        1 for a in agents
+        if a.energy < MIGRATION_DISTRESS_ENERGY or a.thirst < MIGRATION_DISTRESS_THIRST or a.age < MAX_AGE - 30
+    )
+    
+
+    ratio = votes / len(agents)
+
+    if ratio < MIGRATION_VOTE_THRESHOLD:
+        return False
+
+    # --- Détection des agents bloqués par l'eau ---
+    # On calcule la zone accessible pour chaque agent ; ceux sur une île restent.
+    land_cache = {}  # (x,y) -> frozenset des cases accessibles
+
+    def get_land(x, y):
+        if (x, y) not in land_cache:
+            land_cache[(x, y)] = _reachable_land(world, x, y)
+        return land_cache[(x, y)]
+
+    # Un agent est "mobile" si sa zone terrestre est assez grande (> 10 % de la surface totale)
+    total_land = sum(
+        1 for pos, b in world.food.biome_map.items() if b != BIOME_WATER
+    )
+    min_land = max(1, int(total_land * 0.10))
+
+    mobile_agents = [a for a in agents if len(get_land(a.x, a.y)) >= min_land]
+    stranded_agents = [a for a in agents if len(get_land(a.x, a.y)) < min_land]
+
+    if not mobile_agents:
+        return False  # tout le monde est bloqué, impossible de migrer
+
+    # --- Déclenchement : génération d'une nouvelle map ---
+    new_food = FoodSystem(world.width, world.height)
+    new_food.initialize()
+
+    # Nouvelle liste de cases marchables
+    walkable = [
+        (x, y)
+        for x in range(world.width)
+        for y in range(world.height)
+        if new_food.is_walkable(x, y)
+    ]
+    random.shuffle(walkable)
+
+    # On place les agents mobiles sur la nouvelle map
+    occupied = set()
+    for agent in mobile_agents:
+        available = [pos for pos in walkable if pos not in occupied]
+        if not available:
+            agent.alive = False
+            continue
+        pos = available[0]
+        agent.x, agent.y = pos
+        occupied.add(pos)
+
+    # Les agents bloqués restent (et mourront probablement)
+    # On ne touche pas à leur position
+
+    # Mise à jour du monde
+    world.food = new_food
+    world.soil_moisture = SOIL_MOISTURE_INIT
+    world.weather = WEATHER_CLEAR
+    world.migration_count += 1
+    world.last_migration_tick = world.tick
+
+    return True
+
+
+# -----------------------------
 # MAIN SIMULATION STEP
 # -----------------------------
 def world_phase(world):
+    # 0. migration ?
+    check_migration(world)
+
     # 1. météo
     update_weather(world)
 
@@ -287,5 +408,3 @@ def world_phase(world):
     # 7. nourriture
     world.food.grow_food(world.soil_moisture)
     world.tick += 1
-
-
