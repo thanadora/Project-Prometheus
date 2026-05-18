@@ -20,6 +20,9 @@ from config import (
     WEATHER_FROST,
 )
 from world import world_phase
+from policy import HardcodedPolicy
+
+_policy = HardcodedPolicy()
 
 
 # =========================================================
@@ -259,7 +262,7 @@ class SimulationGUI:
                 self.target_tick = None
                 return True
 
-            world_phase(self.world)
+            world_phase(self.world, _policy)
 
         return False
 
@@ -281,7 +284,7 @@ class SimulationGUI:
 
         else:
             if not self.paused and len(self.world.agents) > 0:
-                world_phase(self.world)
+                world_phase(self.world, _policy)
 
             self.draw_world()
 

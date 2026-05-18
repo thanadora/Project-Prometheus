@@ -158,3 +158,6 @@ MIGRATION_DISTRESS_THIRST = 5.0   # soif critique
 
 # Intervalle minimum entre deux migrations (en ticks) pour éviter les migrations en boucle
 MIGRATION_COOLDOWN        = 200
+
+# Seuil d'âge à partir duquel un agent vote en détresse (proche de la mort naturelle)
+MIGRATION_AGE_THRESHOLD   = MAX_AGE - 30

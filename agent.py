@@ -14,7 +14,6 @@ from config import (
     THIRST_RATE_NIGHT,
     THIRST_DAMAGE,
     DRINK_AMOUNT,
-    THIRST_CRITICAL,
     BIOME_DESERT,
     BIOME_WATER,
     WEATHER_VISION,
@@ -23,8 +22,9 @@ from config import (
 from entities import Agent
 
 # -----------------------------
-# ACTIONS / ÉTATS
+# CONSTANTES D'ACTIONS
 # -----------------------------
+# Actions qui consomment une unité de temps (une seule par tick)
 ACTION_UP    = 0
 ACTION_DOWN  = 1
 ACTION_LEFT  = 2
@@ -32,13 +32,11 @@ ACTION_RIGHT = 3
 ACTION_IDLE  = 4
 ACTION_DRINK = 5
 
-STATE_FOOD_DX   = 0
-STATE_FOOD_DY   = 1
-STATE_FOOD_DIST = 2
-STATE_ENERGY    = 3
-STATE_THIRST    = 4
-STATE_WATER_DX  = 5
-STATE_WATER_DY  = 6
+# Actions gratuites (plusieurs possibles par tick, avant l'action principale)
+ACTION_VOTE_MIGRATE = 6
+
+TIMED_ACTIONS = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK}
+FREE_ACTIONS  = {ACTION_VOTE_MIGRATE}
 
 ACTION_TO_DELTA = {
     ACTION_UP:    (0, -1),
@@ -49,19 +47,33 @@ ACTION_TO_DELTA = {
     ACTION_DRINK: (0,  0),
 }
 
+# Indices dans le vecteur d'observation (stable pour l'IA)
+OBS_FOOD_DX   = 0
+OBS_FOOD_DY   = 1
+OBS_FOOD_DIST = 2
+OBS_ENERGY    = 3
+OBS_THIRST    = 4
+OBS_WATER_DX  = 5
+OBS_WATER_DY  = 6
+OBS_SIZE = 7  # dimension totale du vecteur d'observation
+
 # -----------------------------
 # PERCEPTION
 # -----------------------------
 def perceive(agent, world):
+    """
+    Collecte les informations brutes de l'environnement autour de l'agent.
+    Retourne un dict lisible ; build_observation() le normalise pour l'IA.
+    """
     min_food_dist  = float("inf")
     closest_food   = None
     min_water_dist = float("inf")
     closest_water  = None
 
-    night_ratio   = NIGHT_VISION_RATIO if world.is_night() else 1.0
-    weather_ratio = WEATHER_VISION.get(world.weather, 1.0)
+    night_ratio    = NIGHT_VISION_RATIO if world.is_night() else 1.0
+    weather_ratio  = WEATHER_VISION.get(world.weather, 1.0)
     current_radius = VISION_RADIUS * night_ratio * weather_ratio
-    vision_sq = current_radius * current_radius
+    vision_sq      = current_radius * current_radius
 
     if world.food is None:
         return {
@@ -76,16 +88,16 @@ def perceive(agent, world):
         dx = x - agent.x
         dy = y - agent.y
         if TOROIDAL_WORLD:
-            if dx > world.width // 2: dx -= world.width
-            elif dx < -world.width // 2: dx += world.width
-            if dy > world.height // 2: dy -= world.height
+            if dx >  world.width  // 2: dx -= world.width
+            elif dx < -world.width  // 2: dx += world.width
+            if dy >  world.height // 2: dy -= world.height
             elif dy < -world.height // 2: dy += world.height
         dist = dx * dx + dy * dy
         if dist > vision_sq:
             continue
         if dist < min_food_dist:
             min_food_dist = dist
-            closest_food = (dx, dy)
+            closest_food  = (dx, dy)
 
     adjacent_water = False
     for x in range(max(0, agent.x - int(current_radius)),
@@ -94,14 +106,14 @@ def perceive(agent, world):
                        min(world.height, agent.y + int(current_radius) + 1)):
             if world.food.biome_map.get((x, y)) != BIOME_WATER:
                 continue
-            dx = x - agent.x
-            dy = y - agent.y
+            dx   = x - agent.x
+            dy   = y - agent.y
             dist = dx * dx + dy * dy
             if dist > vision_sq:
                 continue
             if dist < min_water_dist:
                 min_water_dist = dist
-                closest_water = (dx, dy)
+                closest_water  = (dx, dy)
             if dist == 1:
                 adjacent_water = True
 
@@ -110,67 +122,96 @@ def perceive(agent, world):
         "water_dx": 0, "water_dy": 0, "water_dist": -1,
         "adjacent_water": adjacent_water,
     }
-
     if closest_food is not None:
-        dx, dy = closest_food
-        result["food_dx"] = dx
-        result["food_dy"] = dy
+        result["food_dx"]   = closest_food[0]
+        result["food_dy"]   = closest_food[1]
         result["food_dist"] = min_food_dist ** 0.5
-
     if closest_water is not None:
-        dx, dy = closest_water
-        result["water_dx"] = dx
-        result["water_dy"] = dy
+        result["water_dx"]   = closest_water[0]
+        result["water_dy"]   = closest_water[1]
         result["water_dist"] = min_water_dist ** 0.5
 
     return result
 
+
 # -----------------------------
-# STATE / DÉCISION
+# OBSERVATION (entrée de l'IA)
 # -----------------------------
-def build_state_vector(agent, world):
-    p = agent.perception
+def build_observation(agent, world):
+    """
+    Retourne un vecteur numpy-compatible de taille OBS_SIZE,
+    toutes valeurs normalisées dans [-1, 1] ou [0, 1].
+
+    C'est l'unique interface entre l'environnement et l'IA.
+    Les indices sont constants (OBS_FOOD_DX, etc.).
+    """
+    p        = agent.perception
     max_dist = max(world.width, world.height)
     return [
-        p["food_dx"] / world.width,
-        p["food_dy"] / world.height,
-        p["food_dist"] / max_dist if p["food_dist"] != -1 else -1,
-        agent.energy / MAX_ENERGY,
-        agent.thirst / MAX_THIRST,
-        p["water_dx"] / world.width,
-        p["water_dy"] / world.height,
+        p["food_dx"]  / world.width,                              # OBS_FOOD_DX
+        p["food_dy"]  / world.height,                             # OBS_FOOD_DY
+        p["food_dist"] / max_dist if p["food_dist"] != -1 else -1,# OBS_FOOD_DIST
+        agent.energy  / MAX_ENERGY,                               # OBS_ENERGY
+        agent.thirst  / MAX_THIRST,                               # OBS_THIRST
+        p["water_dx"] / world.width,                              # OBS_WATER_DX
+        p["water_dy"] / world.height,                             # OBS_WATER_DY
     ]
 
-def decide_action(agent):
-    s = agent.state_vector
-    food_dx   = s[STATE_FOOD_DX]
-    food_dy   = s[STATE_FOOD_DY]
-    food_dist = s[STATE_FOOD_DIST]
-    thirst    = s[STATE_THIRST] * MAX_THIRST
-    water_dx  = s[STATE_WATER_DX]
-    water_dy  = s[STATE_WATER_DY]
-
-    if thirst < THIRST_CRITICAL and agent.perception["adjacent_water"]:
-        return ACTION_DRINK
-
-    if thirst < THIRST_CRITICAL and agent.perception["water_dist"] != -1:
-        if abs(water_dx) > abs(water_dy):
-            return ACTION_RIGHT if water_dx > 0 else ACTION_LEFT
-        return ACTION_DOWN if water_dy > 0 else ACTION_UP
-
-    if food_dist == -1:
-        return random.choice([
-            ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE
-        ])
-
-    if abs(food_dx) > abs(food_dy):
-        return ACTION_RIGHT if food_dx > 0 else ACTION_LEFT
-    return ACTION_DOWN if food_dy > 0 else ACTION_UP
 
 # -----------------------------
-# ACTIONS
+# REWARD (signal d'apprentissage)
 # -----------------------------
-def apply_action(agent, world, action):
+def compute_reward(agent, prev_energy, prev_thirst):
+    """
+    Calcule la récompense obtenue après l'exécution des actions de ce tick.
+
+    Convention :
+      - positif = bon pour la survie
+      - négatif = mauvais
+      - mort = pénalité forte
+
+    À affiner selon la politique d'entraînement choisie.
+    """
+    if not agent.alive:
+        return -10.0
+
+    reward = 0.0
+
+    # Gain / perte d'énergie
+    delta_energy = agent.energy - prev_energy
+    reward += delta_energy * 0.1
+
+    # Gain / perte de soif (thirst monte quand on boit)
+    delta_thirst = agent.thirst - prev_thirst
+    reward += delta_thirst * 0.05
+
+    # Pénalité si en zone critique
+    if agent.energy < 20:
+        reward -= 0.5
+    if agent.thirst < 20:
+        reward -= 0.3
+
+    return reward
+
+
+# -----------------------------
+# APPLICATION DES ACTIONS
+# -----------------------------
+def apply_free_action(agent, action):
+    """
+    Applique une action gratuite (sans coût de temps).
+    Retourne True si l'action a été reconnue.
+    """
+    if action == ACTION_VOTE_MIGRATE:
+        agent.vote_migrate = True
+        return True
+    return False
+
+
+def apply_timed_action(agent, world, action):
+    """
+    Applique l'action principale de l'agent (coûte une unité de temps).
+    """
     if not agent.alive:
         return
 
@@ -178,9 +219,12 @@ def apply_action(agent, world, action):
         agent.thirst = min(MAX_THIRST, agent.thirst + DRINK_AMOUNT)
         return
 
-    dx, dy = ACTION_TO_DELTA[action]
-    new_x = agent.x + dx
-    new_y = agent.y + dy
+    if action not in ACTION_TO_DELTA:
+        return
+
+    dx, dy  = ACTION_TO_DELTA[action]
+    new_x   = agent.x + dx
+    new_y   = agent.y + dy
 
     if TOROIDAL_WORLD:
         new_x %= world.width
@@ -196,15 +240,16 @@ def apply_action(agent, world, action):
     agent.y = new_y
 
     if dx != 0 or dy != 0:
-        weather_extra = WEATHER_MOVE_COST.get(world.weather, 0.0)
-        agent.energy -= (MOVE_COST - IDLE_COST) + weather_extra
+        weather_extra  = WEATHER_MOVE_COST.get(world.weather, 0.0)
+        agent.energy  -= (MOVE_COST - IDLE_COST) + weather_extra
     if agent.energy <= 0:
         agent.alive = False
+
 
 # -----------------------------
 # SOIF
 # -----------------------------
-def update_thirst(agent, world):
+def _update_thirst(agent, world):
     biome = world.food.biome_map.get((agent.x, agent.y))
 
     if world.is_night():
@@ -221,39 +266,38 @@ def update_thirst(agent, world):
         if agent.energy <= 0:
             agent.alive = False
 
+
 # -----------------------------
 # VIE / REPRODUCTION
 # -----------------------------
 def update_agent_life(agent, world):
     agent.age += 1
-    idle_cost = NIGHT_IDLE_COST if world.is_night() else IDLE_COST
+    idle_cost     = NIGHT_IDLE_COST if world.is_night() else IDLE_COST
     agent.energy -= idle_cost + (agent.age / MAX_AGE) * 0.1
     if agent.age >= MAX_AGE or agent.energy <= 0:
         agent.alive = False
         return
-    update_thirst(agent, world)
+    _update_thirst(agent, world)
+
 
 def reproduce(agent, world):
     if agent.energy <= 80 or agent.thirst <= 40:
         return None
 
-    occupied = {(a.x, a.y) for a in world.agents}
-
+    occupied  = {(a.x, a.y) for a in world.agents}
     neighbors = [
         (agent.x + dx, agent.y + dy)
-        for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
         if 0 <= agent.x + dx < world.width
         and 0 <= agent.y + dy < world.height
         and (agent.x + dx, agent.y + dy) not in occupied
         and world.food.is_walkable(agent.x + dx, agent.y + dy)
     ]
-
     if not neighbors:
         return None
 
-    x, y = random.choice(neighbors)
+    x, y          = random.choice(neighbors)
     agent.energy -= 40
-
     return Agent(
         id=-1,
         x=x,
@@ -266,27 +310,23 @@ def reproduce(agent, world):
         alive=True,
     )
 
-# -----------------------------
-# THINK
-# -----------------------------
-def think(agent, world):
-    agent.perception = perceive(agent, world)
-    agent.state_vector = build_state_vector(agent, world)
-    agent.pending_action = decide_action(agent)
 
 # -----------------------------
-# PHASE AGENT
+# THINK  (appelé par world_phase)
 # -----------------------------
-def agent_phase(world):
-    newborns = []
-    for agent in world.agents:
-        if not agent.alive:
-            continue
-        update_agent_life(agent, world)
-        if not agent.alive:
-            continue
-        baby = reproduce(agent, world)
-        if baby is not None:
-            newborns.append(baby)
-        think(agent, world)
-    return newborns
+def think(agent, world, policy):
+    """
+    Met à jour la perception et l'observation, puis délègue la décision
+    à `policy` — objet avec une méthode decide(agent, world).
+
+    Le seul couplage avec l'IA est ici : remplacer policy suffit.
+    """
+    agent.perception  = perceive(agent, world)
+    agent.observation = build_observation(agent, world)
+
+    # snapshot pour le calcul de récompense après exécution
+    agent._prev_energy = agent.energy
+    agent._prev_thirst = agent.thirst
+
+    agent.vote_migrate = False
+    agent.free_actions, agent.pending_action = policy.decide(agent, world)
