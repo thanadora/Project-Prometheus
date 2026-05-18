@@ -9,20 +9,37 @@ from config import (
     WORLD_WIDTH,
     WORLD_HEIGHT,
     BIOME_COLORS,
+    BIOME_WATER,
+    BIOME_DESERT,
+    BIOME_PRAIRIE,
+    BIOME_FOREST,
     FOOD_TYPES,
     NIGHT_RATIO,
+    SEASON_NAMES,
+    WEATHER_NAMES,
+    WEATHER_RAIN,
+    WEATHER_STORM,
+    WEATHER_DROUGHT,
+    WEATHER_FROST,
 )
 from world import world_phase
 
 
-def blend_color(hex_color, night_alpha):
+def blend_color(hex_color, night_alpha, weather_alpha=0.0, weather_color=(0, 0, 0)):
     night_r, night_g, night_b = 0, 0, 40
     r = int(hex_color[1:3], 16)
     g = int(hex_color[3:5], 16)
     b = int(hex_color[5:7], 16)
+
     r = int(r * (1 - night_alpha) + night_r * night_alpha)
     g = int(g * (1 - night_alpha) + night_g * night_alpha)
     b = int(b * (1 - night_alpha) + night_b * night_alpha)
+
+    wr, wg, wb = weather_color
+    r = int(r * (1 - weather_alpha) + wr * weather_alpha)
+    g = int(g * (1 - weather_alpha) + wg * weather_alpha)
+    b = int(b * (1 - weather_alpha) + wb * weather_alpha)
+
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
@@ -37,6 +54,20 @@ def get_night_alpha(world):
         return (t - night_start) / 0.1
     else:
         return 1.0
+
+
+def get_weather_overlay(world):
+    if world.weather == WEATHER_RAIN:
+        return 0.25, (30, 50, 120)
+    elif world.weather == WEATHER_STORM:
+        return 0.45, (20, 20, 60)
+    elif world.weather == WEATHER_DROUGHT:
+        return 0.20, (120, 80, 20)
+    elif world.weather == WEATHER_FROST:
+        return 0.30, (180, 210, 240)   # teinte blanche glacée
+    return 0.0, (0, 0, 0)
+
+
 
 
 class SimulationGUI:
@@ -71,13 +102,14 @@ class SimulationGUI:
         if self.world.food is None or not self.world.food.biome_map:
             return
 
-        alpha = get_night_alpha(self.world)
+        night_alpha = get_night_alpha(self.world)
+        weather_alpha, weather_color = get_weather_overlay(self.world)
 
         for y in range(WORLD_HEIGHT):
             for x in range(WORLD_WIDTH):
                 biome = self.world.food.biome_map.get((x, y))
                 base_color = BIOME_COLORS.get(biome, "#000000")
-                color = blend_color(base_color, alpha)
+                color = blend_color(base_color, night_alpha, weather_alpha, weather_color)
 
                 x1 = x * CELL_SIZE
                 y1 = y * CELL_SIZE
@@ -119,10 +151,16 @@ class SimulationGUI:
 
         food_count = sum(amount for _, _, amount in self.world.food.iter_food())
         hour_str = self.get_time_str()
+        season_str = SEASON_NAMES[self.world.current_season()]
+        weather_str = WEATHER_NAMES[self.world.weather]
+        moisture_str = f"{self.world.soil_moisture:.2f}"
 
         self.info_label.config(
             text=(
                 f"Tick: {self.world.tick} | "
+                f"{season_str} | "
+                f"{weather_str} | "
+                f"Sol: {moisture_str} | "
                 f"Heure: {hour_str} | "
                 f"Agents: {len(self.world.agents)} | "
                 f"Food: {food_count} | "
@@ -154,6 +192,8 @@ class SimulationGUI:
 
             if age_since_birth < 5:
                 color = "green"
+            elif agent.thirst < 25:
+                color = "yellow"
             elif agent.energy > 60:
                 color = "cyan"
             elif agent.energy > 30:

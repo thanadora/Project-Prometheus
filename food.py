@@ -100,18 +100,27 @@ class FoodSystem:
             if self.food_map[pos] < capacity:
                 self.food_map[pos] += 1
 
-    def grow_food(self):
+    def grow_food(self, soil_moisture=0.5):
         for y in range(self.height):
             for x in range(self.width):
                 pos = (x, y)
                 biome = self.biome_map.get(pos)
                 if biome not in FOOD_TYPES:
                     continue
+
+                # bonus d'humidité près de l'eau
+                local_moisture = soil_moisture
+                for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nx, ny = x + dx, y + dy
+                    if self.biome_map.get((nx, ny)) == BIOME_WATER:
+                        local_moisture = min(1.0, soil_moisture + 0.3)
+                        break
+
                 food_type = FOOD_TYPES[biome]
                 capacity = food_type["capacity"]
                 current = self.food_map[pos]
                 saturation = current / capacity if capacity > 0 else 0
-                growth = food_type["respawn"] * (1 - saturation) ** 2
+                growth = food_type["respawn"] * local_moisture * (1 - saturation) ** 2
                 if random.random() < growth:
                     self.food_map[pos] = current + 1
 
@@ -131,3 +140,13 @@ class FoodSystem:
 
     def is_walkable(self, x, y):
         return self.biome_map.get((x, y)) != BIOME_WATER
+
+
+            
+    def update_biomes(self, positions, biome_type):
+        for pos in positions:
+            self.biome_map[pos] = biome_type
+
+            # si ça devient de l'eau, on vide la nourriture
+            if biome_type == BIOME_WATER:
+                self.food_map[pos] = 0

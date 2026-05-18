@@ -13,3 +13,4 @@ class Agent:
     generation: int = 0
     born_tick: int = 0
     pending_action: int = 0
+    thirst: float = 50.0

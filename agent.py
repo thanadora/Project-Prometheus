@@ -8,22 +8,37 @@ from config import (
     MAX_AGE,
     NIGHT_VISION_RATIO,
     NIGHT_IDLE_COST,
+    MAX_THIRST,
+    THIRST_RATE,
+    THIRST_RATE_DESERT,
+    THIRST_RATE_NIGHT,
+    THIRST_DAMAGE,
+    DRINK_AMOUNT,
+    THIRST_CRITICAL,
+    BIOME_DESERT,
+    BIOME_WATER,
+    WEATHER_VISION,
+    WEATHER_MOVE_COST,
 )
 from entities import Agent
 
 # -----------------------------
 # ACTIONS / ÉTATS
 # -----------------------------
-ACTION_UP = 0
-ACTION_DOWN = 1
-ACTION_LEFT = 2
+ACTION_UP    = 0
+ACTION_DOWN  = 1
+ACTION_LEFT  = 2
 ACTION_RIGHT = 3
-ACTION_IDLE = 4
+ACTION_IDLE  = 4
+ACTION_DRINK = 5
 
-STATE_FOOD_DX = 0
-STATE_FOOD_DY = 1
+STATE_FOOD_DX   = 0
+STATE_FOOD_DY   = 1
 STATE_FOOD_DIST = 2
-STATE_ENERGY = 3
+STATE_ENERGY    = 3
+STATE_THIRST    = 4
+STATE_WATER_DX  = 5
+STATE_WATER_DY  = 6
 
 ACTION_TO_DELTA = {
     ACTION_UP:    (0, -1),
@@ -31,66 +46,99 @@ ACTION_TO_DELTA = {
     ACTION_LEFT:  (-1, 0),
     ACTION_RIGHT: (1,  0),
     ACTION_IDLE:  (0,  0),
+    ACTION_DRINK: (0,  0),
 }
 
 # -----------------------------
 # PERCEPTION
 # -----------------------------
 def perceive(agent, world):
-    min_dist = float("inf")
-    closest_food = None
+    min_food_dist  = float("inf")
+    closest_food   = None
+    min_water_dist = float("inf")
+    closest_water  = None
 
-    # vision réduite la nuit
-    current_radius = VISION_RADIUS * (NIGHT_VISION_RATIO if world.is_night() else 1.0)
+    night_ratio   = NIGHT_VISION_RATIO if world.is_night() else 1.0
+    weather_ratio = WEATHER_VISION.get(world.weather, 1.0)
+    current_radius = VISION_RADIUS * night_ratio * weather_ratio
     vision_sq = current_radius * current_radius
 
     if world.food is None:
-        return {"food_dx": 0, "food_dy": 0, "food_dist": -1}
+        return {
+            "food_dx": 0, "food_dy": 0, "food_dist": -1,
+            "water_dx": 0, "water_dy": 0, "water_dist": -1,
+            "adjacent_water": False,
+        }
 
     for x, y, amount in world.food.iter_food():
         if not world.food.is_walkable(x, y):
             continue
-
         dx = x - agent.x
         dy = y - agent.y
-
         if TOROIDAL_WORLD:
-            if dx > world.width // 2:
-                dx -= world.width
-            elif dx < -world.width // 2:
-                dx += world.width
-            if dy > world.height // 2:
-                dy -= world.height
-            elif dy < -world.height // 2:
-                dy += world.height
-
+            if dx > world.width // 2: dx -= world.width
+            elif dx < -world.width // 2: dx += world.width
+            if dy > world.height // 2: dy -= world.height
+            elif dy < -world.height // 2: dy += world.height
         dist = dx * dx + dy * dy
         if dist > vision_sq:
             continue
-        if dist < min_dist:
-            min_dist = dist
+        if dist < min_food_dist:
+            min_food_dist = dist
             closest_food = (dx, dy)
 
-    if closest_food is None:
-        return {"food_dx": 0, "food_dy": 0, "food_dist": -1}
+    adjacent_water = False
+    for x in range(max(0, agent.x - int(current_radius)),
+                   min(world.width, agent.x + int(current_radius) + 1)):
+        for y in range(max(0, agent.y - int(current_radius)),
+                       min(world.height, agent.y + int(current_radius) + 1)):
+            if world.food.biome_map.get((x, y)) != BIOME_WATER:
+                continue
+            dx = x - agent.x
+            dy = y - agent.y
+            dist = dx * dx + dy * dy
+            if dist > vision_sq:
+                continue
+            if dist < min_water_dist:
+                min_water_dist = dist
+                closest_water = (dx, dy)
+            if dist == 1:
+                adjacent_water = True
 
-    dx, dy = closest_food
-    return {
-        "food_dx": dx,
-        "food_dy": dy,
-        "food_dist": min_dist ** 0.5,
+    result = {
+        "food_dx": 0, "food_dy": 0, "food_dist": -1,
+        "water_dx": 0, "water_dy": 0, "water_dist": -1,
+        "adjacent_water": adjacent_water,
     }
+
+    if closest_food is not None:
+        dx, dy = closest_food
+        result["food_dx"] = dx
+        result["food_dy"] = dy
+        result["food_dist"] = min_food_dist ** 0.5
+
+    if closest_water is not None:
+        dx, dy = closest_water
+        result["water_dx"] = dx
+        result["water_dy"] = dy
+        result["water_dist"] = min_water_dist ** 0.5
+
+    return result
 
 # -----------------------------
 # STATE / DÉCISION
 # -----------------------------
 def build_state_vector(agent, world):
     p = agent.perception
+    max_dist = max(world.width, world.height)
     return [
         p["food_dx"] / world.width,
         p["food_dy"] / world.height,
-        p["food_dist"] / max(world.width, world.height) if p["food_dist"] != -1 else -1,
+        p["food_dist"] / max_dist if p["food_dist"] != -1 else -1,
         agent.energy / MAX_ENERGY,
+        agent.thirst / MAX_THIRST,
+        p["water_dx"] / world.width,
+        p["water_dy"] / world.height,
     ]
 
 def decide_action(agent):
@@ -98,6 +146,17 @@ def decide_action(agent):
     food_dx   = s[STATE_FOOD_DX]
     food_dy   = s[STATE_FOOD_DY]
     food_dist = s[STATE_FOOD_DIST]
+    thirst    = s[STATE_THIRST] * MAX_THIRST
+    water_dx  = s[STATE_WATER_DX]
+    water_dy  = s[STATE_WATER_DY]
+
+    if thirst < THIRST_CRITICAL and agent.perception["adjacent_water"]:
+        return ACTION_DRINK
+
+    if thirst < THIRST_CRITICAL and agent.perception["water_dist"] != -1:
+        if abs(water_dx) > abs(water_dy):
+            return ACTION_RIGHT if water_dx > 0 else ACTION_LEFT
+        return ACTION_DOWN if water_dy > 0 else ACTION_UP
 
     if food_dist == -1:
         return random.choice([
@@ -113,6 +172,10 @@ def decide_action(agent):
 # -----------------------------
 def apply_action(agent, world, action):
     if not agent.alive:
+        return
+
+    if action == ACTION_DRINK:
+        agent.thirst = min(MAX_THIRST, agent.thirst + DRINK_AMOUNT)
         return
 
     dx, dy = ACTION_TO_DELTA[action]
@@ -133,9 +196,30 @@ def apply_action(agent, world, action):
     agent.y = new_y
 
     if dx != 0 or dy != 0:
-        agent.energy -= (MOVE_COST - IDLE_COST)
+        weather_extra = WEATHER_MOVE_COST.get(world.weather, 0.0)
+        agent.energy -= (MOVE_COST - IDLE_COST) + weather_extra
     if agent.energy <= 0:
         agent.alive = False
+
+# -----------------------------
+# SOIF
+# -----------------------------
+def update_thirst(agent, world):
+    biome = world.food.biome_map.get((agent.x, agent.y))
+
+    if world.is_night():
+        rate = THIRST_RATE_NIGHT
+    elif biome == BIOME_DESERT:
+        rate = THIRST_RATE_DESERT
+    else:
+        rate = THIRST_RATE
+
+    agent.thirst = max(0, agent.thirst - rate)
+
+    if agent.thirst <= 0:
+        agent.energy -= THIRST_DAMAGE
+        if agent.energy <= 0:
+            agent.alive = False
 
 # -----------------------------
 # VIE / REPRODUCTION
@@ -146,9 +230,11 @@ def update_agent_life(agent, world):
     agent.energy -= idle_cost + (agent.age / MAX_AGE) * 0.1
     if agent.age >= MAX_AGE or agent.energy <= 0:
         agent.alive = False
+        return
+    update_thirst(agent, world)
 
 def reproduce(agent, world):
-    if agent.energy <= 80:
+    if agent.energy <= 80 or agent.thirst <= 40:
         return None
 
     occupied = {(a.x, a.y) for a in world.agents}
@@ -175,6 +261,7 @@ def reproduce(agent, world):
         generation=agent.generation + 1,
         born_tick=world.tick,
         energy=40,
+        thirst=50,
         age=0,
         alive=True,
     )
