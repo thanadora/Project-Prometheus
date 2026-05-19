@@ -163,4 +163,9 @@ MIGRATION_COOLDOWN        = 200
 MIGRATION_AGE_THRESHOLD   = MAX_AGE - 30
 
 SAVE_CRITICAL_AGENTS     = 3    # seuil bas  → déclenche la sauvegarde
-SAVE_CRITICAL_RECOVERY   = 10   # seuil haut → réarme la sauvegarde
+SAVE_CRITICAL_RECOVERY   = 10   # seuil haut → réarme la 
+
+VIDEO_FPS_SCREEN = 30   # FPS mode "ce qu'on voit à l'écran"
+VIDEO_FPS_TICK   = 10   # FPS mode "tick par tick"
+
+OUTPUT_DIR = "outputs"

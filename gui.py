@@ -1,10 +1,15 @@
 
 import tkinter as tk
+import os
+from tkinter import messagebox
 from tkinter import filedialog
 from save import save_world, load_world
 from config import SAVE_CRITICAL_AGENTS, SAVE_CRITICAL_RECOVERY
-
+from tkinter import filedialog
+from recorder import Recorder
+from config import VIDEO_FPS_SCREEN, VIDEO_FPS_TICK
 from config import (
+    OUTPUT_DIR,
     CELL_SIZE,
     MARGIN,
     SIMULATION_DELAY_MS,
@@ -100,12 +105,15 @@ class SimulationGUI:
         self.running = True
         self.selected_agent = None
         self.critical_saved = False
+        self.recorder       = Recorder()
 
         # -------------------------------------------------
         # Fenêtre
         # -------------------------------------------------
         self.root = tk.Tk()
         self.root.title("Simulation Vie Artificielle")
+
+        self.record_mode    = tk.StringVar(value="screen")
 
         # Raccourcis clavier
         self.root.bind("<space>", self.toggle_pause)
@@ -176,6 +184,24 @@ class SimulationGUI:
             command=self.on_load
         ).pack(side=tk.LEFT, padx=5)
 
+        self.record_btn = tk.Button(
+            controls,
+            text="⏺ Enregistrer",
+            command=self.on_record_toggle,
+            bg="#550000", fg="white",
+        )
+        self.record_btn.pack(side=tk.LEFT, padx=5)
+
+        tk.Radiobutton(
+            controls, text="Écran (vitesse réelle)",
+            variable=self.record_mode, value="screen",
+        ).pack(side=tk.LEFT)
+
+        tk.Radiobutton(
+            controls, text="Tick par tick",
+            variable=self.record_mode, value="tick",
+        ).pack(side=tk.LEFT)
+
         # -------------------------------------------------
         # Infos
         # -------------------------------------------------
@@ -229,9 +255,10 @@ class SimulationGUI:
         path = filedialog.asksaveasfilename(
             defaultextension=".json",
             filetypes=[("JSON", "*.json")],
-            initialfile=f"save_tick{self.world.tick}.json",
+            initialfile=f"{OUTPUT_DIR}/save_tick{self.world.tick}.json",
         )
         if path:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
             save_world(self.world, path)
 
     def on_load(self):
@@ -243,6 +270,25 @@ class SimulationGUI:
             self.selected_agent = None
             self.critical_saved = False
             self.graph.history  = []
+    
+    def on_record_toggle(self):
+        if not self.recorder.recording:
+            self.recorder.start(self.record_mode.get())
+            self.record_btn.config(text="⏹ Stop", bg="#990000")
+        else:
+            path = filedialog.asksaveasfilename(
+                defaultextension=".mp4",
+                filetypes=[("MP4", "*.mp4")],
+                initialfile=f"{OUTPUT_DIR}/simulation_tick{self.world.tick}.mp4",
+            )
+            if path:
+                ok = self.recorder.stop(path, time_scale=self.time_scale)
+                if ok:
+                    tk.messagebox.showinfo("Enregistrement", f"Vidéo sauvegardée :\n{path}")
+            else:
+                # annulé — on arrête quand même l'enregistrement
+                self.recorder.stop("/dev/null", time_scale=self.time_scale)
+            self.record_btn.config(text="⏺ Enregistrer", bg="#550000")
 
     def draw_agent_panel(self):
         a = self.selected_agent
@@ -361,6 +407,8 @@ class SimulationGUI:
                 return True
 
             world_phase(self.world, self.policy)
+            if self.recorder.recording and self.recorder.mode == "tick":
+                self.recorder.frames.append(self.recorder.capture_world(self.world))
 
         return False
 
@@ -383,13 +431,18 @@ class SimulationGUI:
         else:
             if not self.paused and len(self.world.agents) > 0:
                 world_phase(self.world, self.policy)
-                n = len(self.world.agents)
             
+            n = len(self.world.agents)
             if n <= SAVE_CRITICAL_AGENTS and not self.critical_saved:
-                save_world(self.world, f"save_critical_tick{self.world.tick}.json")
+                os.makedirs(OUTPUT_DIR, exist_ok=True)
+                save_world(self.world, f"{OUTPUT_DIR}/save_critical_tick{self.world.tick}.json")
                 self.critical_saved = True
             elif n >= SAVE_CRITICAL_RECOVERY and self.critical_saved:
                 self.critical_saved = False
+
+            if self.recorder.recording and self.recorder.mode == "tick":
+                frame = self.recorder.capture_world(self.world)
+                self.recorder.frames.append(frame)
 
             self.draw_world()
 
@@ -519,6 +572,9 @@ class SimulationGUI:
         food_count_val = sum(amount for _, _, amount in self.world.food.iter_food())
         self.graph.update(self.world.tick, len(self.world.agents), food_count_val, self.world.death_count)
 
+        if self.recorder.recording and self.recorder.mode == "screen":
+            frame = self.recorder.capture_world(self.world)
+            self.recorder.frames.append(frame)
 
     # =====================================================
     # HEURE
