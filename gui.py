@@ -1,5 +1,8 @@
 
 import tkinter as tk
+from tkinter import filedialog
+from save import save_world, load_world
+from config import SAVE_CRITICAL_AGENTS, SAVE_CRITICAL_RECOVERY
 
 from config import (
     CELL_SIZE,
@@ -20,9 +23,6 @@ from config import (
     WEATHER_FROST,
 )
 from world import world_phase
-from policy import HardcodedPolicy
-
-_policy = HardcodedPolicy()
 
 
 # =========================================================
@@ -87,8 +87,9 @@ def get_weather_overlay(world):
 # =========================================================
 
 class SimulationGUI:
-    def __init__(self, world):
-        self.world = world
+    def __init__(self, world, policy):
+        self.world  = world
+        self.policy = policy
 
         self.paused = False
         self.time_scale = 1.0
@@ -97,6 +98,8 @@ class SimulationGUI:
         self.fast_mode = False
         self.target_tick = None
         self.running = True
+        self.selected_agent = None
+        self.critical_saved = False
 
         # -------------------------------------------------
         # Fenêtre
@@ -123,6 +126,13 @@ class SimulationGUI:
             bg=BACKGROUND_COLOR,
         )
         self.canvas_sim.pack()
+        self.canvas_sim.bind("<Button-1>", self.on_canvas_click)
+
+        # -------------------------------------------------
+        # Panneau agent sélectionné
+        # -------------------------------------------------
+        self.agent_label = tk.Label(self.root, text="", font=("Courier", 10), justify=tk.LEFT, anchor="w")
+        self.agent_label.pack(fill=tk.X, padx=10)
 
         # -------------------------------------------------
         # Boutons (fix 1)
@@ -154,11 +164,28 @@ class SimulationGUI:
             command=self.fast_forward
         ).pack(side=tk.LEFT, padx=5)
 
+        tk.Button(
+            controls,
+            text="💾 Sauvegarder",
+            command=self.on_save
+        ).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
+            controls,
+            text="📂 Charger",
+            command=self.on_load
+        ).pack(side=tk.LEFT, padx=5)
+
         # -------------------------------------------------
         # Infos
         # -------------------------------------------------
         self.info_label = tk.Label(self.root, text="", font=("Arial", 12))
         self.info_label.pack()
+
+        # -------------------------------------------------
+        # Graphe population (fenêtre séparée)
+        # -------------------------------------------------
+        self.graph = PopulationGraph(self.root)
 
         # -------------------------------------------------
         # Démarrage
@@ -177,6 +204,77 @@ class SimulationGUI:
 
     def toggle_pause(self, event=None):
         self.paused = not self.paused
+
+    # =====================================================
+    # SÉLECTION D'AGENT
+    # =====================================================
+
+    def on_canvas_click(self, event):
+        cx = event.x // CELL_SIZE
+        cy = event.y // CELL_SIZE
+        # Trouver l'agent vivant le plus proche du clic
+        best = None
+        best_dist = float("inf")
+        for agent in self.world.agents:
+            if not agent.alive:
+                continue
+            d = abs(agent.x - cx) + abs(agent.y - cy)
+            if d < best_dist:
+                best_dist = d
+                best = agent
+        # Désélectionner si clic loin de tout agent (> 3 cases)
+        self.selected_agent = best if best_dist <= 3 else None
+
+    def on_save(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+            initialfile=f"save_tick{self.world.tick}.json",
+        )
+        if path:
+            save_world(self.world, path)
+
+    def on_load(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("JSON", "*.json")]
+        )
+        if path:
+            self.world          = load_world(path)
+            self.selected_agent = None
+            self.critical_saved = False
+            self.graph.history  = []
+
+    def draw_agent_panel(self):
+        a = self.selected_agent
+        # Vérifier que l'agent est encore vivant
+        if a is None or not a.alive:
+            self.selected_agent = None
+            self.agent_label.config(text="")
+            return
+
+        from agent import ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK, ACTION_VOTE_MIGRATE
+        action_names = {
+            ACTION_UP: "↑ Haut", ACTION_DOWN: "↓ Bas",
+            ACTION_LEFT: "← Gauche", ACTION_RIGHT: "→ Droite",
+            ACTION_IDLE: "· Idle", ACTION_DRINK: "💧 Boire",
+            ACTION_VOTE_MIGRATE: "🚶 Vote migration",
+        }
+        action_str = action_names.get(a.pending_action, "?")
+        free_str   = ", ".join(action_names.get(fa, "?") for fa in a.free_actions) or "—"
+        vote_str   = "Oui" if a.vote_migrate else "Non"
+
+        self.agent_label.config(text=(
+            f"[ Agent #{a.id} ]  "
+            f"Pos: ({a.x},{a.y})  "
+            f"Énergie: {a.energy:.1f}  "
+            f"Soif: {a.thirst:.1f}  "
+            f"Âge: {a.age}  "
+            f"Gén: {a.generation}  "
+            f"Action: {action_str}  "
+            f"Libres: {free_str}  "
+            f"Vote migr.: {vote_str}  "
+            f"Reward: {a.last_reward:+.2f}"
+        ))
 
 
     def speed_up(self, event=None):
@@ -262,7 +360,7 @@ class SimulationGUI:
                 self.target_tick = None
                 return True
 
-            world_phase(self.world, _policy)
+            world_phase(self.world, self.policy)
 
         return False
 
@@ -284,7 +382,14 @@ class SimulationGUI:
 
         else:
             if not self.paused and len(self.world.agents) > 0:
-                world_phase(self.world, _policy)
+                world_phase(self.world, self.policy)
+                n = len(self.world.agents)
+            
+            if n <= SAVE_CRITICAL_AGENTS and not self.critical_saved:
+                save_world(self.world, f"save_critical_tick{self.world.tick}.json")
+                self.critical_saved = True
+            elif n >= SAVE_CRITICAL_RECOVERY and self.critical_saved:
+                self.critical_saved = False
 
             self.draw_world()
 
@@ -299,7 +404,7 @@ class SimulationGUI:
     # =====================================================
 
     def draw_biomes(self):
-        if self.world.food is None or not self.world.food.biome_map:
+        if self.world.food is None or not self.world.map.biome_map:
             return
 
         night_alpha = get_night_alpha(self.world)
@@ -308,7 +413,7 @@ class SimulationGUI:
         for y in range(WORLD_HEIGHT):
             for x in range(WORLD_WIDTH):
 
-                biome = self.world.food.biome_map.get((x, y))
+                biome = self.world.map.biome_map.get((x, y))
                 base_color = BIOME_COLORS.get(biome, "#000000")
 
                 color = blend_color(
@@ -368,6 +473,7 @@ class SimulationGUI:
         self.draw_grid()
         self.draw_foods()
         self.draw_agents()
+        self.draw_agent_panel()
 
         food_count = sum(
             amount
@@ -410,6 +516,9 @@ class SimulationGUI:
             )
         )
 
+        food_count_val = sum(amount for _, _, amount in self.world.food.iter_food())
+        self.graph.update(self.world.tick, len(self.world.agents), food_count_val, self.world.death_count)
+
 
     # =====================================================
     # HEURE
@@ -430,6 +539,8 @@ class SimulationGUI:
     # =====================================================
 
     def draw_agents(self):
+        from config import VISION_RADIUS, NIGHT_VISION_RATIO, WEATHER_VISION
+
         for agent in self.world.agents:
 
             x1 = agent.x * CELL_SIZE + 2
@@ -444,26 +555,22 @@ class SimulationGUI:
 
             if age_since_birth < 5:
                 color = "green"
-
             elif agent.thirst < 25:
                 color = "yellow"
-
             elif agent.energy > 60:
                 color = "cyan"
-
             elif agent.energy > 30:
                 color = "orange"
-
             else:
                 color = "red"
 
+            is_selected = (self.selected_agent is not None and agent.id == self.selected_agent.id)
+
             self.canvas_sim.create_rectangle(
-                x1,
-                y1,
-                x2,
-                y2,
+                x1, y1, x2, y2,
                 fill=color,
-                outline=""
+                outline="white" if is_selected else "",
+                width=2 if is_selected else 0,
             )
 
             self.canvas_sim.create_text(
@@ -473,6 +580,20 @@ class SimulationGUI:
                 fill="white",
                 font=("Arial", 6)
             )
+
+            # Rayon de vision pour l'agent sélectionné
+            if is_selected:
+                night_ratio   = NIGHT_VISION_RATIO if self.world.is_night() else 1.0
+                weather_ratio = WEATHER_VISION.get(self.world.weather, 1.0)
+                radius_cells  = VISION_RADIUS * night_ratio * weather_ratio
+                radius_px     = radius_cells * CELL_SIZE
+                cx = agent.x * CELL_SIZE + CELL_SIZE / 2
+                cy = agent.y * CELL_SIZE + CELL_SIZE / 2
+                self.canvas_sim.create_oval(
+                    cx - radius_px, cy - radius_px,
+                    cx + radius_px, cy + radius_px,
+                    outline="white", dash=(4, 4), width=1,
+                )
 
 
     # =====================================================
@@ -485,7 +606,7 @@ class SimulationGUI:
             if amount <= 0:
                 continue
 
-            biome = self.world.food.biome_map.get((x, y))
+            biome = self.world.map.biome_map.get((x, y))
             food_type = FOOD_TYPES.get(biome)
 
             if food_type is None:
@@ -509,3 +630,99 @@ class SimulationGUI:
                 outline=""
             )
 
+
+# =========================================================
+# GRAPHE DE POPULATION
+# =========================================================
+
+class PopulationGraph:
+    HISTORY   = 500   # nombre de ticks conservés
+    W, H      = 500, 220
+    PAD_L     = 45
+    PAD_R     = 10
+    PAD_T     = 10
+    PAD_B     = 30
+
+    COLORS = {
+        "agents": "#00cfff",
+        "food":   "#90ee90",
+        "deaths": "#ff6666",
+    }
+
+    def __init__(self, master):
+        self.win = tk.Toplevel(master)
+        self.win.title("Population")
+        self.win.resizable(False, False)
+        # Empêche la fermeture — la fenêtre vit tant que la simu tourne
+        self.win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        self.canvas = tk.Canvas(self.win, width=self.W, height=self.H, bg="#1a1a2e")
+        self.canvas.pack()
+
+        # légende
+        legend = tk.Frame(self.win, bg="#1a1a2e")
+        legend.pack(fill=tk.X, padx=5, pady=2)
+        for label, color in [("Agents", "#00cfff"), ("Nourriture /10", "#90ee90"), ("Morts /10", "#ff6666")]:
+            tk.Label(legend, text=f"— {label}", fg=color, bg="#1a1a2e", font=("Arial", 9)).pack(side=tk.LEFT, padx=8)
+
+        self.history = []   # list de (tick, agents, food, deaths)
+
+    def update(self, tick, agents, food, deaths):
+        self.history.append((tick, agents, food // 10, deaths // 10))
+        if len(self.history) > self.HISTORY:
+            self.history.pop(0)
+        self._draw()
+
+    def _draw(self):
+        c = self.canvas
+        c.delete("all")
+
+        if len(self.history) < 2:
+            return
+
+        pl = self.PAD_L
+        pr = self.PAD_R
+        pt = self.PAD_T
+        pb = self.PAD_B
+        w  = self.W - pl - pr
+        h  = self.H - pt - pb
+
+        # Fond grille
+        c.create_rectangle(pl, pt, pl + w, pt + h, fill="#11112a", outline="#333355")
+        for i in range(5):
+            y = pt + i * h // 4
+            c.create_line(pl, y, pl + w, y, fill="#333355", dash=(2, 4))
+
+        # Valeurs max pour normaliser
+        max_val = max(
+            max((v for _, v, _, _ in self.history), default=1),
+            max((v for _, _, v, _ in self.history), default=1),
+            max((v for _, _, _, v in self.history), default=1),
+            1
+        )
+
+        n = len(self.history)
+
+        def to_xy(i, val):
+            x = pl + int(i / (n - 1) * w)
+            y = pt + h - int(val / max_val * h)
+            return x, y
+
+        for key, idx in [("agents", 1), ("food", 2), ("deaths", 3)]:
+            color  = self.COLORS[key]
+            points = [to_xy(i, row[idx]) for i, row in enumerate(self.history)]
+            for j in range(len(points) - 1):
+                c.create_line(points[j], points[j + 1], fill=color, width=1)
+
+        # Axe Y — valeurs
+        for i in range(5):
+            val = int(max_val * (4 - i) / 4)
+            y   = pt + i * h // 4
+            c.create_text(pl - 4, y, text=str(val), fill="#aaaacc", font=("Arial", 7), anchor="e")
+
+        # Tick courant
+        if self.history:
+            last_tick = self.history[-1][0]
+            first_tick = self.history[0][0]
+            c.create_text(pl + w, pt + h + 15, text=f"tick {last_tick}", fill="#aaaacc", font=("Arial", 8), anchor="e")
+            c.create_text(pl,     pt + h + 15, text=f"tick {first_tick}", fill="#aaaacc", font=("Arial", 8), anchor="w")

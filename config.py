@@ -161,3 +161,6 @@ MIGRATION_COOLDOWN        = 200
 
 # Seuil d'âge à partir duquel un agent vote en détresse (proche de la mort naturelle)
 MIGRATION_AGE_THRESHOLD   = MAX_AGE - 30
+
+SAVE_CRITICAL_AGENTS     = 3    # seuil bas  → déclenche la sauvegarde
+SAVE_CRITICAL_RECOVERY   = 10   # seuil haut → réarme la sauvegarde

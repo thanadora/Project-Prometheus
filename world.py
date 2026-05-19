@@ -30,13 +30,12 @@ from config import (
     BIOME_PRAIRIE,
     MIGRATION_VOTE_THRESHOLD,
     MIGRATION_COOLDOWN,
+    MAX_THIRST,
 )
-from entities import Agent
+from agent import Agent, apply_free_action, apply_timed_action, think, update_agent_life
+from map import GameMap
 from food import FoodSystem
-from agent import (
-    apply_free_action, apply_timed_action,
-    think, update_agent_life, reproduce,
-)
+
 
 # -----------------------------
 # WORLD
@@ -48,6 +47,7 @@ class World:
     agents: List[Agent] = field(default_factory=list)
     tick: int = 0
     death_count: int = 0
+    map: GameMap = None
     food: FoodSystem = None
     _next_id: int = field(default=0, repr=False)
     weather: int = WEATHER_CLEAR
@@ -74,6 +74,30 @@ class World:
 
 
 # -----------------------------
+# REWARD (signal d'apprentissage)
+# -----------------------------
+def compute_reward(agent, prev_energy, prev_thirst):
+    """
+    Calcule la récompense après exécution des actions du tick.
+    Défini ici (dans l'environnement) car c'est l'environnement
+    qui décide ce qui est bon ou mauvais, pas l'agent.
+    """
+    if not agent.alive:
+        return -10.0
+
+    reward = 0.0
+    reward += (agent.energy - prev_energy) * 0.1
+    reward += (agent.thirst - prev_thirst) * 0.05
+
+    if agent.energy < 20:
+        reward -= 0.5
+    if agent.thirst < 20:
+        reward -= 0.3
+
+    return reward
+
+
+# -----------------------------
 # MÉTÉO
 # -----------------------------
 def update_weather(world):
@@ -85,66 +109,76 @@ def update_weather(world):
             world.weather = random.choices(weathers, weights=SEASON_WEATHER_PROBS[season], k=1)[0]
 
         if old_weather == WEATHER_STORM   and world.weather == WEATHER_STORM:
-            expand_water(world)
+            _expand_water(world)
         if old_weather == WEATHER_DROUGHT and world.weather == WEATHER_DROUGHT:
-            shrink_water(world)
+            _shrink_water(world)
 
     delta = WEATHER_MOISTURE_DELTA[world.weather]
     world.soil_moisture = max(SOIL_MOISTURE_MIN, min(SOIL_MOISTURE_MAX, world.soil_moisture + delta))
 
 
-def shrink_water(world):
+def _shrink_water(world):
     to_land = {
         (x, y)
-        for (x, y), biome in world.food.biome_map.items()
+        for (x, y), biome in world.map.biome_map.items()
         if biome == BIOME_WATER
         and any(
-            world.food.biome_map.get((x + dx, y + dy)) != BIOME_WATER
+            world.map.biome_map.get((x + dx, y + dy)) != BIOME_WATER
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
             if 0 <= x + dx < world.width and 0 <= y + dy < world.height
         )
     }
-    world.food.update_biomes(to_land, BIOME_PRAIRIE)
+    world.map.update_biomes(to_land, BIOME_PRAIRIE)
     for pos in to_land:
-        world.food.food_map[pos] = 0
+        world.food.clear_position(pos)
 
 
-def expand_water(world):
+def _expand_water(world):
     new_water = {
         (x + dx, y + dy)
-        for (x, y), biome in world.food.biome_map.items()
+        for (x, y), biome in world.map.biome_map.items()
         if biome == BIOME_WATER
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
         if 0 <= x + dx < world.width and 0 <= y + dy < world.height
-        and world.food.biome_map.get((x + dx, y + dy)) != BIOME_WATER
+        and world.map.biome_map.get((x + dx, y + dy)) != BIOME_WATER
     }
-    world.food.update_biomes(new_water, BIOME_WATER)
+    world.map.update_biomes(new_water, BIOME_WATER)
+    for pos in new_water:
+        world.food.clear_position(pos)
     for agent in world.agents:
-        if not world.food.is_walkable(agent.x, agent.y):
+        if not world.map.is_walkable(agent.x, agent.y):
             agent.alive = False
 
 
 # -----------------------------
 # INIT
 # -----------------------------
+def _new_map_and_food(width, height):
+    game_map = GameMap(width=width, height=height)
+    game_map.initialize()
+    food = FoodSystem(width=width, height=height)
+    food.initialize(game_map.biome_map)
+    return game_map, food
+
+
 def initialize_world():
-    world = World(width=WORLD_WIDTH, height=WORLD_HEIGHT)
-    world.food = FoodSystem(world.width, world.height)
-    world.food.initialize()
+    world      = World(width=WORLD_WIDTH, height=WORLD_HEIGHT)
+    world.map, world.food = _new_map_and_food(world.width, world.height)
 
     walkable = [
         (x, y)
         for x in range(world.width)
         for y in range(world.height)
-        if world.food.is_walkable(x, y)
+        if world.map.is_walkable(x, y)
     ]
     random.shuffle(walkable)
 
-    for i, (x, y) in enumerate(walkable[:INITIAL_AGENT_COUNT]):
+    for x, y in walkable[:INITIAL_AGENT_COUNT]:
         world.agents.append(Agent(
             id=world.next_id(),
             x=x, y=y,
             energy=MAX_ENERGY / 2,
+            thirst=MAX_THIRST / 2,
             generation=0,
             born_tick=0,
         ))
@@ -155,7 +189,7 @@ def initialize_world():
 # -----------------------------
 # COLLISIONS
 # -----------------------------
-def resolve_collisions(world):
+def _resolve_collisions(world):
     agents = list(world.agents)
     random.shuffle(agents)
     eaten = set()
@@ -165,23 +199,57 @@ def resolve_collisions(world):
         pos = (agent.x, agent.y)
         if pos in eaten:
             continue
-        gain = world.food.consume_food(pos)
+        gain = world.food.consume_food(world.map.biome_map, pos)
         if gain > 0:
             agent.energy = min(MAX_ENERGY, agent.energy + gain)
             eaten.add(pos)
 
 
-def remove_dead_agents(world):
+def _remove_dead_agents(world):
     alive = [a for a in world.agents if a.alive]
     world.death_count += len(world.agents) - len(alive)
     world.agents = alive
 
 
 # -----------------------------
+# REPRODUCTION
+# -----------------------------
+def _reproduce(agent, world, policy):
+    """
+    La décision de se reproduire est déléguée à policy.
+    La mécanique (trouver une case libre, créer le bébé) reste ici.
+    """
+    if not policy.decide_reproduce(agent, world):
+        return None
+
+    occupied  = {(a.x, a.y) for a in world.agents}
+    neighbors = [
+        (agent.x + dx, agent.y + dy)
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        if 0 <= agent.x + dx < world.width
+        and 0 <= agent.y + dy < world.height
+        and (agent.x + dx, agent.y + dy) not in occupied
+        and world.map.is_walkable(agent.x + dx, agent.y + dy)
+    ]
+    if not neighbors:
+        return None
+
+    x, y          = random.choice(neighbors)
+    agent.energy -= 40
+    return Agent(
+        id=-1,
+        x=x, y=y,
+        generation=agent.generation + 1,
+        born_tick=world.tick,
+        energy=40,
+        thirst=50,
+    )
+
+
+# -----------------------------
 # MIGRATION
 # -----------------------------
 def _reachable_land(world, sx, sy):
-    """Flood-fill depuis (sx, sy), retourne les cases terrestres accessibles."""
     visited, stack = set(), [(sx, sy)]
     while stack:
         x, y = stack.pop()
@@ -189,7 +257,7 @@ def _reachable_land(world, sx, sy):
             continue
         if not (0 <= x < world.width and 0 <= y < world.height):
             continue
-        if not world.food.is_walkable(x, y):
+        if not world.map.is_walkable(x, y):
             continue
         visited.add((x, y))
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
@@ -197,11 +265,7 @@ def _reachable_land(world, sx, sy):
     return visited
 
 
-def check_migration(world):
-    """
-    Lit les votes posés par les agents (agent.vote_migrate) et déclenche
-    une migration si le seuil est atteint.
-    """
+def _check_migration(world):
     agents = [a for a in world.agents if a.alive]
     if not agents or len(agents) > 5:
         return False
@@ -212,8 +276,7 @@ def check_migration(world):
     if votes / len(agents) < MIGRATION_VOTE_THRESHOLD:
         return False
 
-    # Agents bloqués vs mobiles
-    total_land = sum(1 for b in world.food.biome_map.values() if b != BIOME_WATER)
+    total_land = sum(1 for b in world.map.biome_map.values() if b != BIOME_WATER)
     min_land   = max(1, int(total_land * 0.10))
     land_cache = {}
 
@@ -223,19 +286,16 @@ def check_migration(world):
             land_cache[key] = _reachable_land(world, a.x, a.y)
         return land_cache[key]
 
-    mobile   = [a for a in agents if len(get_land(a)) >= min_land]
-    stranded = [a for a in agents if len(get_land(a)) <  min_land]
-
+    mobile = [a for a in agents if len(get_land(a)) >= min_land]
     if not mobile:
         return False
 
-    new_food = FoodSystem(world.width, world.height)
-    new_food.initialize()
+    new_map, new_food = _new_map_and_food(world.width, world.height)
     walkable = [
         (x, y)
         for x in range(world.width)
         for y in range(world.height)
-        if new_food.is_walkable(x, y)
+        if new_map.is_walkable(x, y)
     ]
     random.shuffle(walkable)
 
@@ -248,9 +308,10 @@ def check_migration(world):
         agent.x, agent.y = available[0]
         occupied.add(available[0])
 
-    world.food             = new_food
-    world.soil_moisture    = SOIL_MOISTURE_INIT
-    world.weather          = WEATHER_CLEAR
+    world.map             = new_map
+    world.food            = new_food
+    world.soil_moisture   = SOIL_MOISTURE_INIT
+    world.weather         = WEATHER_CLEAR
     world.migration_count += 1
     world.last_migration_tick = world.tick
     return True
@@ -262,25 +323,24 @@ def check_migration(world):
 def world_phase(world, policy):
     """
     Un tick de simulation.
-    `policy` est un objet BasePolicy (voir policy.py).
-    Passer une instance différente suffit pour changer le comportement de tous les agents.
+    policy : instance de BasePolicy (voir policy.py).
     """
     # 1. météo
     update_weather(world)
 
-    # 2. perception + décision (délégué à policy)
+    # 2. perception + décision
     for agent in world.agents:
         if agent.alive:
             think(agent, world, policy)
 
-    # 3. actions gratuites (vote migration, etc.)
+    # 3. actions gratuites
     for agent in world.agents:
         if agent.alive:
             for action in agent.free_actions:
                 apply_free_action(agent, action)
 
-    # 4. vérification migration (lit les votes)
-    check_migration(world)
+    # 4. migration
+    _check_migration(world)
 
     # 5. action principale
     for agent in world.agents:
@@ -294,23 +354,22 @@ def world_phase(world, policy):
             continue
         update_agent_life(agent, world)
         if agent.alive:
-            baby = reproduce(agent, world)
+            baby = _reproduce(agent, world, policy)
             if baby:
                 newborns.append(baby)
 
-    # 7. calcul des récompenses (pour l'apprentissage)
-    from agent import compute_reward
+    # 7. récompenses
     for agent in world.agents:
         if agent.alive:
             agent.last_reward = compute_reward(agent, agent._prev_energy, agent._prev_thirst)
 
     # 8. nettoyage + naissances
-    resolve_collisions(world)
-    remove_dead_agents(world)
+    _resolve_collisions(world)
+    _remove_dead_agents(world)
     for baby in newborns:
         baby.id = world.next_id()
     world.agents.extend(newborns)
 
-    # 9. croissance de la nourriture
-    world.food.grow_food(world.soil_moisture)
+    # 9. croissance nourriture
+    world.food.grow_food(world.map.biome_map, world.soil_moisture)
     world.tick += 1
