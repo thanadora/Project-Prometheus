@@ -20,7 +20,7 @@ Sorties attendues :
 import random
 from agent import (
     ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT,
-    ACTION_IDLE, ACTION_DRINK, ACTION_VOTE_MIGRATE,
+    ACTION_IDLE, ACTION_DRINK, ACTION_VOTE_MIGRATE, ACTION_PICKUP, ACTION_EAT,
 )
 from config import (
     MAX_AGE,
@@ -28,6 +28,7 @@ from config import (
     MIGRATION_DISTRESS_ENERGY,
     MIGRATION_DISTRESS_THIRST,
     MIGRATION_AGE_THRESHOLD,
+    INVENTORY_SIZE
 )
 
 
@@ -83,6 +84,12 @@ class HardcodedPolicy(BasePolicy):
             if abs(water_dx) > abs(water_dy):
                 return ACTION_RIGHT if water_dx > 0 else ACTION_LEFT
             return ACTION_DOWN if water_dy > 0 else ACTION_UP
+
+        if agent.energy < 40 and agent.inventory:
+            return ACTION_EAT
+
+        if food_dist == 0 and len(agent.inventory) < INVENTORY_SIZE:
+            return ACTION_PICKUP
 
         if food_dist == -1:
             return random.choice([ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE])

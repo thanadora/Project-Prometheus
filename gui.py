@@ -26,6 +26,7 @@ from config import (
     WEATHER_STORM,
     WEATHER_DROUGHT,
     WEATHER_FROST,
+    INVENTORY_SIZE
 )
 from world import world_phase
 
@@ -297,12 +298,14 @@ class SimulationGUI:
             self.selected_agent = None
             self.agent_label.config(text="")
             return
-
-        from agent import ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK, ACTION_VOTE_MIGRATE
+        inv_str = f"{len(a.inventory)}/{INVENTORY_SIZE} {a.inventory}"
+        from agent import ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK, ACTION_VOTE_MIGRATE, ACTION_PICKUP, ACTION_EAT
         action_names = {
             ACTION_UP: "↑ Haut", ACTION_DOWN: "↓ Bas",
             ACTION_LEFT: "← Gauche", ACTION_RIGHT: "→ Droite",
             ACTION_IDLE: "· Idle", ACTION_DRINK: "💧 Boire",
+            ACTION_PICKUP: "🎒 Ramasser",
+            ACTION_EAT: "🍖 Manger poche",
             ACTION_VOTE_MIGRATE: "🚶 Vote migration",
         }
         action_str = action_names.get(a.pending_action, "?")
@@ -314,12 +317,14 @@ class SimulationGUI:
             f"Pos: ({a.x},{a.y})  "
             f"Énergie: {a.energy:.1f}  "
             f"Soif: {a.thirst:.1f}  "
+            f"Inventaire: {inv_str}  "
             f"Âge: {a.age}  "
             f"Gén: {a.generation}  "
             f"Action: {action_str}  "
             f"Libres: {free_str}  "
             f"Vote migr.: {vote_str}  "
             f"Reward: {a.last_reward:+.2f}"
+            
         ))
 
 

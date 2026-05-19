@@ -169,3 +169,8 @@ VIDEO_FPS_SCREEN = 30   # FPS mode "ce qu'on voit à l'écran"
 VIDEO_FPS_TICK   = 10   # FPS mode "tick par tick"
 
 OUTPUT_DIR = "outputs"
+
+# Inventaire
+INVENTORY_SIZE = 3
+ACTION_PICKUP  = 7
+ACTION_EAT     = 8

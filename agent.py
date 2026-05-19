@@ -19,6 +19,7 @@ from config import (
     BIOME_WATER,
     WEATHER_VISION,
     WEATHER_MOVE_COST,
+    INVENTORY_SIZE
 )
 
 
@@ -47,6 +48,7 @@ class Agent:
     last_reward: float = 0.0
     _prev_energy: float = 0.0
     _prev_thirst: float = 0.0
+    inventory: list = field(default_factory=list)
 
 
 # -----------------------------
@@ -58,10 +60,12 @@ ACTION_LEFT  = 2
 ACTION_RIGHT = 3
 ACTION_IDLE  = 4
 ACTION_DRINK = 5
+ACTION_PICKUP = 7
+ACTION_EAT    = 8
 
 ACTION_VOTE_MIGRATE = 6
 
-TIMED_ACTIONS = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK}
+TIMED_ACTIONS = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK, ACTION_PICKUP, ACTION_EAT}
 FREE_ACTIONS  = {ACTION_VOTE_MIGRATE}
 
 ACTION_TO_DELTA = {
@@ -187,6 +191,19 @@ def apply_timed_action(agent, world, action):
 
     if action == ACTION_DRINK:
         agent.thirst = min(MAX_THIRST, agent.thirst + DRINK_AMOUNT)
+        return
+    
+    if action == ACTION_PICKUP:
+        if len(agent.inventory) < INVENTORY_SIZE:
+            gain = world.food.consume_food(world.map.biome_map, (agent.x, agent.y))
+            if gain > 0:
+                agent.inventory.append(gain)
+        return
+
+    if action == ACTION_EAT:
+        if agent.inventory:
+            gain = agent.inventory.pop(0)
+            agent.energy = min(MAX_ENERGY, agent.energy + gain)
         return
 
     if action not in ACTION_TO_DELTA:
