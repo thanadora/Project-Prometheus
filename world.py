@@ -63,9 +63,15 @@ class World:
         return (self.tick % DAY_DURATION) / DAY_DURATION
 
     def is_night(self):
+        import config
+        if not config.ENABLE_DAY_NIGHT:
+            return False
         return self.time_of_day() >= (1 - NIGHT_RATIO)
 
     def current_season(self):
+        import config
+        if not config.ENABLE_SEASONS:
+            return SEASON_SPRING   # saison fixe
         idx = (self.tick % YEAR_DURATION) // SEASON_DURATION
         return [SEASON_SPRING, SEASON_SUMMER, SEASON_AUTUMN, SEASON_WINTER][idx]
 
@@ -162,8 +168,19 @@ def _new_map_and_food(width, height):
 
 
 def initialize_world():
-    world      = World(width=WORLD_WIDTH, height=WORLD_HEIGHT)
+    import config
+    world = World(width=WORLD_WIDTH, height=WORLD_HEIGHT)
     world.map, world.food = _new_map_and_food(world.width, world.height)
+
+    if not config.ENABLE_BIOMES:
+        # Remplace tout par prairie, retire l'eau
+        from config import BIOME_PRAIRIE
+        world.map.biome_map = {
+            (x, y): BIOME_PRAIRIE
+            for x in range(world.width)
+            for y in range(world.height)
+        }
+        world.food.initialize(world.map.biome_map)
 
     walkable = [
         (x, y)
@@ -321,12 +338,11 @@ def _check_migration(world):
 # BOUCLE PRINCIPALE
 # -----------------------------
 def world_phase(world, policy):
-    """
-    Un tick de simulation.
-    policy : instance de BasePolicy (voir policy.py).
-    """
+    import config  # lecture dynamique des flags (modifiés par config_gui)
+
     # 1. météo
-    update_weather(world)
+    if config.ENABLE_WEATHER and config.ENABLE_BIOMES:
+        update_weather(world)
 
     # 2. perception + décision
     for agent in world.agents:
@@ -340,7 +356,8 @@ def world_phase(world, policy):
                 apply_free_action(agent, action)
 
     # 4. migration
-    _check_migration(world)
+    if config.ENABLE_MIGRATION:
+        _check_migration(world)
 
     # 5. action principale
     for agent in world.agents:
@@ -353,7 +370,7 @@ def world_phase(world, policy):
         if not agent.alive:
             continue
         update_agent_life(agent, world)
-        if agent.alive:
+        if agent.alive and config.ENABLE_REPRODUCTION:
             baby = _reproduce(agent, world, policy)
             if baby:
                 newborns.append(baby)

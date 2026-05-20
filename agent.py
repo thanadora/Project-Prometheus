@@ -19,7 +19,7 @@ from config import (
     BIOME_WATER,
     WEATHER_VISION,
     WEATHER_MOVE_COST,
-    INVENTORY_SIZE
+    INVENTORY_SIZE,
 )
 
 
@@ -37,14 +37,11 @@ class Agent:
     alive: bool = True
     generation: int = 0
     born_tick: int = 0
-    # Perception / observation (remplis par think())
     perception: dict = field(default_factory=dict)
     observation: list = field(default_factory=list)
-    # Décision (remplis par policy.decide(), consommés par world_phase)
     free_actions: list = field(default_factory=list)
     pending_action: int = 0
     vote_migrate: bool = False
-    # Apprentissage
     last_reward: float = 0.0
     _prev_energy: float = 0.0
     _prev_thirst: float = 0.0
@@ -60,10 +57,9 @@ ACTION_LEFT  = 2
 ACTION_RIGHT = 3
 ACTION_IDLE  = 4
 ACTION_DRINK = 5
+ACTION_VOTE_MIGRATE = 6
 ACTION_PICKUP = 7
 ACTION_EAT    = 8
-
-ACTION_VOTE_MIGRATE = 6
 
 TIMED_ACTIONS = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK, ACTION_PICKUP, ACTION_EAT}
 FREE_ACTIONS  = {ACTION_VOTE_MIGRATE}
@@ -77,7 +73,6 @@ ACTION_TO_DELTA = {
     ACTION_DRINK: (0,  0),
 }
 
-# Indices dans le vecteur d'observation
 OBS_FOOD_DX   = 0
 OBS_FOOD_DY   = 1
 OBS_FOOD_DIST = 2
@@ -92,6 +87,8 @@ OBS_SIZE      = 7
 # PERCEPTION
 # -----------------------------
 def perceive(agent, world):
+    import config
+
     min_food_dist  = float("inf")
     closest_food   = None
     min_water_dist = float("inf")
@@ -120,22 +117,23 @@ def perceive(agent, world):
             closest_food  = (dx, dy)
 
     adjacent_water = False
-    for x in range(max(0, agent.x - int(current_radius)),
-                   min(world.width, agent.x + int(current_radius) + 1)):
-        for y in range(max(0, agent.y - int(current_radius)),
-                       min(world.height, agent.y + int(current_radius) + 1)):
-            if world.map.biome_map.get((x, y)) != BIOME_WATER:
-                continue
-            dx   = x - agent.x
-            dy   = y - agent.y
-            dist = dx * dx + dy * dy
-            if dist > vision_sq:
-                continue
-            if dist < min_water_dist:
-                min_water_dist = dist
-                closest_water  = (dx, dy)
-            if dist == 1:
-                adjacent_water = True
+    if config.ENABLE_BIOMES and config.ENABLE_THIRST:
+        for x in range(max(0, agent.x - int(current_radius)),
+                       min(world.width, agent.x + int(current_radius) + 1)):
+            for y in range(max(0, agent.y - int(current_radius)),
+                           min(world.height, agent.y + int(current_radius) + 1)):
+                if world.map.biome_map.get((x, y)) != BIOME_WATER:
+                    continue
+                dx   = x - agent.x
+                dy   = y - agent.y
+                dist = dx * dx + dy * dy
+                if dist > vision_sq:
+                    continue
+                if dist < min_water_dist:
+                    min_water_dist = dist
+                    closest_water  = (dx, dy)
+                if dist == 1:
+                    adjacent_water = True
 
     result = {
         "food_dx": 0, "food_dy": 0, "food_dist": -1,
@@ -158,10 +156,6 @@ def perceive(agent, world):
 # OBSERVATION (entrée de l'IA)
 # -----------------------------
 def build_observation(agent, world):
-    """
-    Vecteur normalisé de taille OBS_SIZE.
-    Unique interface entre l'environnement et l'IA.
-    """
     p        = agent.perception
     max_dist = max(world.width, world.height)
     return [
@@ -186,14 +180,20 @@ def apply_free_action(agent, action):
 
 
 def apply_timed_action(agent, world, action):
+    import config
+
     if not agent.alive:
         return
 
     if action == ACTION_DRINK:
+        if not config.ENABLE_THIRST:
+            return
         agent.thirst = min(MAX_THIRST, agent.thirst + DRINK_AMOUNT)
         return
-    
+
     if action == ACTION_PICKUP:
+        if not config.ENABLE_INVENTORY:
+            return
         if len(agent.inventory) < INVENTORY_SIZE:
             gain = world.food.consume_food(world.map.biome_map, (agent.x, agent.y))
             if gain > 0:
@@ -201,6 +201,8 @@ def apply_timed_action(agent, world, action):
         return
 
     if action == ACTION_EAT:
+        if not config.ENABLE_INVENTORY:
+            return
         if agent.inventory:
             gain = agent.inventory.pop(0)
             agent.energy = min(MAX_ENERGY, agent.energy + gain)
@@ -237,9 +239,14 @@ def apply_timed_action(agent, world, action):
 # VIE
 # -----------------------------
 def _update_thirst(agent, world):
-    biome = world.map.biome_map.get((agent.x, agent.y))
+    import config
+    if not config.ENABLE_THIRST:
+        return
 
-    if world.is_night():
+    biome = world.map.biome_map.get((agent.x, agent.y))
+    if not config.ENABLE_BIOMES:
+        rate = THIRST_RATE
+    elif world.is_night():
         rate = THIRST_RATE_NIGHT
     elif biome == BIOME_DESERT:
         rate = THIRST_RATE_DESERT
@@ -247,7 +254,6 @@ def _update_thirst(agent, world):
         rate = THIRST_RATE
 
     agent.thirst = max(0, agent.thirst - rate)
-
     if agent.thirst <= 0:
         agent.energy -= THIRST_DAMAGE
         if agent.energy <= 0:
@@ -255,10 +261,14 @@ def _update_thirst(agent, world):
 
 
 def update_agent_life(agent, world):
-    agent.age   += 1
-    idle_cost    = NIGHT_IDLE_COST if world.is_night() else IDLE_COST
+    import config
+    agent.age += 1
+    idle_cost  = NIGHT_IDLE_COST if world.is_night() else IDLE_COST
     agent.energy -= idle_cost + (agent.age / MAX_AGE) * 0.1
-    if agent.age >= MAX_AGE or agent.energy <= 0:
+    if config.ENABLE_AGE_DEATH and agent.age >= MAX_AGE:
+        agent.alive = False
+        return
+    if agent.energy <= 0:
         agent.alive = False
         return
     _update_thirst(agent, world)
@@ -268,10 +278,6 @@ def update_agent_life(agent, world):
 # THINK (appelé par world_phase)
 # -----------------------------
 def think(agent, world, policy):
-    """
-    Perçoit, construit l'observation, snapshote l'état,
-    puis délègue entièrement la décision à policy.
-    """
     agent.perception  = perceive(agent, world)
     agent.observation = build_observation(agent, world)
 
