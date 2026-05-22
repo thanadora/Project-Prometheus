@@ -1,5 +1,6 @@
 import random
 from dataclasses import dataclass, field
+from logger import get_logger
 from config import (
     VISION_RADIUS,
     TOROIDAL_WORLD,
@@ -189,6 +190,7 @@ def apply_timed_action(agent, world, action):
         if not config.ENABLE_THIRST:
             return
         agent.thirst = min(MAX_THIRST, agent.thirst + DRINK_AMOUNT)
+        get_logger().debug(world.tick, f"Agent #{agent.id} boit | soif={agent.thirst:.1f}")
         return
 
     if action == ACTION_PICKUP:
@@ -198,6 +200,7 @@ def apply_timed_action(agent, world, action):
             gain = world.food.consume_food(world.map.biome_map, (agent.x, agent.y))
             if gain > 0:
                 agent.inventory.append(gain)
+                get_logger().debug(world.tick, f"Agent #{agent.id} ramasse nourriture (+{gain}) | inventaire={agent.inventory}")
         return
 
     if action == ACTION_EAT:
@@ -206,6 +209,7 @@ def apply_timed_action(agent, world, action):
         if agent.inventory:
             gain = agent.inventory.pop(0)
             agent.energy = min(MAX_ENERGY, agent.energy + gain)
+            get_logger().debug(world.tick, f"Agent #{agent.id} mange depuis poche (+{gain}) | énergie={agent.energy:.1f}")
         return
 
     if action not in ACTION_TO_DELTA:
@@ -255,20 +259,23 @@ def _update_thirst(agent, world):
 
     agent.thirst = max(0, agent.thirst - rate)
     if agent.thirst <= 0:
+        get_logger().warning(world.tick, f"Agent #{agent.id} soif critique — dégâts énergie ({agent.energy:.1f} → {agent.energy - THIRST_DAMAGE:.1f})")
         agent.energy -= THIRST_DAMAGE
         if agent.energy <= 0:
             agent.alive = False
 
-
 def update_agent_life(agent, world):
     import config
+    log = get_logger()
     agent.age += 1
     idle_cost  = NIGHT_IDLE_COST if world.is_night() else IDLE_COST
     agent.energy -= idle_cost + (agent.age / MAX_AGE) * 0.1
     if config.ENABLE_AGE_DEATH and agent.age >= MAX_AGE:
+        log.info(world.tick, f"Agent #{agent.id} mort de vieillesse | âge={agent.age} gén={agent.generation}")
         agent.alive = False
         return
     if agent.energy <= 0:
+        log.info(world.tick, f"Agent #{agent.id} mort d'épuisement | âge={agent.age} gén={agent.generation}")
         agent.alive = False
         return
     _update_thirst(agent, world)

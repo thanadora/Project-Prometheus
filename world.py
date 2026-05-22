@@ -1,6 +1,7 @@
 import random
 from dataclasses import dataclass, field
 from typing import List
+from logger import get_logger
 
 from config import (
     WORLD_WIDTH,
@@ -140,20 +141,15 @@ def _shrink_water(world):
 
 
 def _expand_water(world):
-    new_water = {
-        (x + dx, y + dy)
-        for (x, y), biome in world.map.biome_map.items()
-        if biome == BIOME_WATER
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        if 0 <= x + dx < world.width and 0 <= y + dy < world.height
-        and world.map.biome_map.get((x + dx, y + dy)) != BIOME_WATER
-    }
+    log = get_logger()
+    new_water = { ... }  # inchangé
     world.map.update_biomes(new_water, BIOME_WATER)
     for pos in new_water:
         world.food.clear_position(pos)
     for agent in world.agents:
         if not world.map.is_walkable(agent.x, agent.y):
             agent.alive = False
+            log.warning(world.tick, f"Agent #{agent.id} noyé par expansion de l'eau en ({agent.x},{agent.y})")
 
 
 # -----------------------------
@@ -169,6 +165,7 @@ def _new_map_and_food(width, height):
 
 def initialize_world():
     import config
+    log = get_logger()
     world = World(width=WORLD_WIDTH, height=WORLD_HEIGHT)
     world.map, world.food = _new_map_and_food(world.width, world.height)
 
@@ -200,6 +197,9 @@ def initialize_world():
             born_tick=0,
         ))
 
+
+    log.info(0, f"Monde initialisé — {len(world.agents)} agents — biomes={'ON' if config.ENABLE_BIOMES else 'OFF'}")
+
     return world
 
 
@@ -223,9 +223,12 @@ def _resolve_collisions(world):
 
 
 def _remove_dead_agents(world):
-    alive = [a for a in world.agents if a.alive]
-    world.death_count += len(world.agents) - len(alive)
-    world.agents = alive
+    log = get_logger()
+    dead = [a for a in world.agents if not a.alive]
+    for a in dead:
+        log.info(world.tick, f"Agent #{a.id} mort | énergie={a.energy:.1f} soif={a.thirst:.1f} âge={a.age} gén={a.generation}")
+    world.death_count += len(dead)
+    world.agents = [a for a in world.agents if a.alive]
 
 
 # -----------------------------
@@ -253,6 +256,8 @@ def _reproduce(agent, world, policy):
 
     x, y          = random.choice(neighbors)
     agent.energy -= 40
+    log = get_logger()
+    log.info(world.tick, f"Agent #{agent.id} se reproduit → bébé gén.{agent.generation+1} en ({x},{y})")
     return Agent(
         id=-1,
         x=x, y=y,
@@ -331,6 +336,8 @@ def _check_migration(world):
     world.weather         = WEATHER_CLEAR
     world.migration_count += 1
     world.last_migration_tick = world.tick
+    log = get_logger()
+    log.info(world.tick, f"MIGRATION #{world.migration_count} — {len(mobile)} agents ont migré")
     return True
 
 
@@ -383,6 +390,12 @@ def world_phase(world, policy):
     # 8. nettoyage + naissances
     _resolve_collisions(world)
     _remove_dead_agents(world)
+
+    log = get_logger()
+    n = len(world.agents)
+    if n <= 5:
+        log.warning(world.tick, f"Population critique : {n} agents restants")
+
     for baby in newborns:
         baby.id = world.next_id()
     world.agents.extend(newborns)

@@ -202,6 +202,24 @@ def run_config_gui():
     add_module(t, 8, "👶 Reproduction",                       "ENABLE_REPRODUCTION")
     add_module(t, 9, "💀 Mort de vieillesse",                 "ENABLE_AGE_DEATH")
 
+
+    section(t, 10, "Logs")
+    tk.Label(t, text="Niveau de log", bg=BG, fg=FG,
+            font=("Arial", 10)).grid(row=11, column=0, sticky="w", padx=20, pady=6)
+    log_level_var = tk.StringVar(value=config.LOG_LEVEL)
+    for i, (level, desc) in enumerate([
+        ("DEBUG",   "tout logger (actions, perceptions...)"),
+        ("INFO",    "naissances, morts, migrations"),
+        ("WARNING", "population critique, soif critique"),
+        ("ERROR",   "erreurs uniquement"),
+    ]):
+        tk.Radiobutton(
+            t, text=f"{level} — {desc}",
+            variable=log_level_var, value=level,
+            bg=BG, fg=FG, activebackground=BG, selectcolor="#333355",
+            font=("Arial", 9), anchor="w",
+        ).grid(row=12+i, column=0, columnspan=2, sticky="w", padx=30, pady=2)
+        
     # Dépendances automatiques en cascade
     def on_biomes_toggle(*_):
         if not module_vars["ENABLE_BIOMES"].get():
@@ -214,7 +232,7 @@ def run_config_gui():
 
     module_vars["ENABLE_BIOMES"].trace_add("write", on_biomes_toggle)
     module_vars["ENABLE_SEASONS"].trace_add("write", on_seasons_toggle)
-
+    
     # ── Bouton Lancer ────────────────────────────────────────────
     def on_launch():
         for attr, (typ, var) in fields.items():
@@ -253,6 +271,7 @@ def run_config_gui():
         for attr, var in module_vars.items():
             setattr(config, attr, bool(var.get()))
 
+        config.LOG_LEVEL = log_level_var.get()
         launched["ok"] = True
         root.destroy()
 
