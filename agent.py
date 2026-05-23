@@ -47,7 +47,7 @@ class Agent:
     _prev_energy: float = 0.0
     _prev_thirst: float = 0.0
     inventory: list = field(default_factory=list)
-
+    policy: object = field(default=None, repr=False)
 
 # -----------------------------
 # CONSTANTES D'ACTIONS
@@ -292,4 +292,5 @@ def think(agent, world, policy):
     agent._prev_thirst = agent.thirst
 
     agent.vote_migrate = False
-    agent.free_actions, agent.pending_action = policy.decide(agent, world)
+    effective_policy = agent.policy if agent.policy is not None else policy
+    agent.free_actions, agent.pending_action = effective_policy.decide(agent, world)

@@ -2,6 +2,7 @@ import random
 from dataclasses import dataclass, field
 from typing import List
 from logger import get_logger
+from policy_registry import distribute_policies
 
 from config import (
     WORLD_WIDTH,
@@ -142,7 +143,14 @@ def _shrink_water(world):
 
 def _expand_water(world):
     log = get_logger()
-    new_water = { ... }  # inchangé
+    new_water = {
+        (x + dx, y + dy)
+        for (x, y), biome in world.map.biome_map.items()
+        if biome == BIOME_WATER
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        if 0 <= x + dx < world.width and 0 <= y + dy < world.height
+        and world.map.biome_map.get((x + dx, y + dy)) != BIOME_WATER
+    }
     world.map.update_biomes(new_water, BIOME_WATER)
     for pos in new_water:
         world.food.clear_position(pos)
@@ -199,7 +207,9 @@ def initialize_world():
 
 
     log.info(0, f"Monde initialisé — {len(world.agents)} agents — biomes={'ON' if config.ENABLE_BIOMES else 'OFF'}")
-
+    
+    from policy_registry import distribute_policies
+    distribute_policies(world.agents, config.POLICY_DISTRIBUTION)
     return world
 
 
@@ -265,6 +275,7 @@ def _reproduce(agent, world, policy):
         born_tick=world.tick,
         energy=40,
         thirst=50,
+        policy=agent.policy
     )
 
 

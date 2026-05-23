@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import config
+from policy_registry import REGISTRY
 
 # Valeurs initiales pour FOOD_TYPES (pas dans config directement)
 config._FOOD_DESERT_GAIN     = config.FOOD_TYPES[config.BIOME_DESERT]["gain"]
@@ -232,7 +233,45 @@ def run_config_gui():
 
     module_vars["ENABLE_BIOMES"].trace_add("write", on_biomes_toggle)
     module_vars["ENABLE_SEASONS"].trace_add("write", on_seasons_toggle)
-    
+    # ── Onglet 9 : IA ────────────────────────────────────────────
+    t = make_tab(nb, "🤖 IA")
+
+    section(t, 0, "Distribution des policies")
+    tk.Label(t, text="Répartition des agents par policy (total = 100%)",
+            bg=BG, fg="#888899", font=("Arial", 9)
+            ).grid(row=1, column=0, columnspan=3, sticky="w", padx=20, pady=(0,8))
+
+    policy_sliders = {}
+    for i, (name, info) in enumerate(REGISTRY.items()):
+        row = 2 + i * 2
+        tk.Label(t, text=f"{name}", bg=BG, fg=info["color"],
+                font=("Arial", 10, "bold")).grid(row=row, column=0, sticky="w", padx=20, pady=(6,0))
+        tk.Label(t, text=info["description"], bg=BG, fg="#888899",
+                font=("Arial", 8)).grid(row=row, column=1, columnspan=2, sticky="w", padx=8)
+
+        var = tk.IntVar(value=int(config.POLICY_DISTRIBUTION.get(name, 0) * 100))
+        sl  = tk.Scale(t, from_=0, to=100, orient=tk.HORIZONTAL,
+                    variable=var, bg=BG, fg=FG, troughcolor="#333355",
+                    highlightthickness=0, length=260)
+        sl.grid(row=row+1, column=0, columnspan=2, padx=20, pady=(0,4))
+        tk.Label(t, textvariable=var, bg=BG, fg=info["color"], width=4
+                ).grid(row=row+1, column=2)
+        policy_sliders[name] = var
+
+    # Indicateur total
+    total_var = tk.StringVar(value="Total : 100%")
+    total_lbl = tk.Label(t, textvariable=total_var, bg=BG, fg=ACCENT, font=("Arial", 10, "bold"))
+    total_lbl.grid(row=2 + len(REGISTRY)*2, column=0, columnspan=3, pady=10)
+
+    def update_total(*_):
+        total = sum(v.get() for v in policy_sliders.values())
+        color = ACCENT if total == 100 else "#ff4444"
+        total_var.set(f"Total : {total}%")
+        total_lbl.config(fg=color)
+
+    for var in policy_sliders.values():
+        var.trace_add("write", update_total)
+        
     # ── Bouton Lancer ────────────────────────────────────────────
     def on_launch():
         for attr, (typ, var) in fields.items():
@@ -272,6 +311,21 @@ def run_config_gui():
             setattr(config, attr, bool(var.get()))
 
         config.LOG_LEVEL = log_level_var.get()
+        # Validation distribution IA
+        total = sum(v.get() for v in policy_sliders.values())
+        if total != 100:
+            tk.messagebox.showerror(
+                "Distribution invalide",
+                f"La somme des policies doit être 100% (actuellement {total}%)"
+            )
+            return
+
+        # Applique la distribution
+        config.POLICY_DISTRIBUTION = {
+            name: var.get() / 100.0
+            for name, var in policy_sliders.items()
+            if var.get() > 0
+}
         launched["ok"] = True
         root.destroy()
 

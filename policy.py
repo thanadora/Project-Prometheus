@@ -92,3 +92,18 @@ class HardcodedPolicy(BasePolicy):
         if abs(food_dx) > abs(food_dy):
             return ACTION_RIGHT if food_dx > 0 else ACTION_LEFT
         return ACTION_DOWN if food_dy > 0 else ACTION_UP
+
+
+class RandomPolicy(BasePolicy):
+    """Actions aléatoires — sert de baseline basse."""
+
+    def decide(self, agent, world):
+        import random
+        action = random.choice([
+            ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE
+        ])
+        return [], action
+
+    def decide_reproduce(self, agent, world):
+        import random
+        return random.random() < 0.01
