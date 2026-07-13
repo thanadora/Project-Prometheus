@@ -101,10 +101,26 @@ def run_config_gui():
     add_int  (t, 2, "Hauteur",             "WORLD_HEIGHT",        10, 80)
     add_int  (t, 3, "Agents initiaux",     "INITIAL_AGENT_COUNT", 1,  50)
     add_bool (t, 4, "Monde toroïdal",      "TOROIDAL_WORLD")
-    section(t, 5, "Biomes — seuils de génération")
-    add_float(t, 6, "Seuil eau",           "WATER_THRESHOLD",     0.1, 0.8)
-    add_float(t, 7, "Seuil forêt",         "FOREST_THRESHOLD",    0.1, 0.8)
-    add_float(t, 8, "Seuil prairie",       "PRAIRIE_THRESHOLD",   0.1, 0.9)
+
+    section(t, 5, "Monde infini")
+    infinite_var = tk.BooleanVar(value=config.INFINITE_WORLD)
+    tk.Checkbutton(
+        t, text="🌐 Monde infini (façon Minecraft) — sans bords, générée à la demande",
+        variable=infinite_var, bg=BG, fg=FG, activebackground=BG,
+        selectcolor="#333355", font=("Arial", 10), anchor="w",
+    ).grid(row=6, column=0, columnspan=3, sticky="w", padx=20, pady=(2, 0))
+    tk.Label(
+        t,
+        text="Ignore Largeur/Hauteur/Toroïdal ci-dessus. Désactive automatiquement\n"
+             "la migration (inutile sans bords). Les agents démarrent groupés au\n"
+             "centre et peuvent ensuite s'étendre aussi loin qu'ils veulent.",
+        bg=BG, fg="#888899", font=("Arial", 8), justify="left",
+    ).grid(row=7, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 6))
+
+    section(t, 8, "Biomes — seuils de génération")
+    add_float(t, 9,  "Seuil eau",           "WATER_THRESHOLD",     0.1, 0.8)
+    add_float(t, 10, "Seuil forêt",         "FOREST_THRESHOLD",    0.1, 0.8)
+    add_float(t, 11, "Seuil prairie",       "PRAIRIE_THRESHOLD",   0.1, 0.9)
 
     # ── Onglet 2 : Énergie ───────────────────────────────────────
     t = make_tab(nb, "⚡ Énergie")
@@ -171,6 +187,20 @@ def run_config_gui():
     add_float(t, 2, "Seuil détresse énergie",  "MIGRATION_DISTRESS_ENERGY", 1.0, 30.0, 0.5)
     add_float(t, 3, "Seuil détresse soif",     "MIGRATION_DISTRESS_THIRST", 1.0, 30.0, 0.5)
     add_int  (t, 4, "Seuil âge détresse",      "MIGRATION_AGE_THRESHOLD",   50, 1000)
+    add_int  (t, 5, "Population max migrable", "MIGRATION_MAX_AGENTS",      3, 200)
+
+    # ── Onglet 7bis : Communication ────────────────────────────
+    t = make_tab(nb, "💬 Communication")
+    section(t, 0, "Lettres")
+    add_int(t, 1, "Taille de l'alphabet",  "ALPHABET_SIZE", 2, 10)
+    add_int(t, 2, "Rayon d'écoute",        "COMM_RADIUS",   1, 20)
+    tk.Label(
+        t,
+        text="Chaque agent peut \"dire\" une lettre par tick (action libre, gratuite).\n"
+             "Les agents dans le rayon d'écoute la perçoivent. Aucun sens n'est\n"
+             "câblé en dur — c'est juste le mécanisme brut.",
+        bg=BG, fg="#888899", font=("Arial", 8), justify="left",
+    ).grid(row=3, column=0, columnspan=3, sticky="w", padx=20, pady=(10, 0))
 
     # ── Onglet 8 : Modules ───────────────────────────────────────
     t = make_tab(nb, "🎮 Modules")
@@ -202,11 +232,14 @@ def run_config_gui():
     add_module(t, 7, "🎒 Inventaire",                         "ENABLE_INVENTORY")
     add_module(t, 8, "👶 Reproduction",                       "ENABLE_REPRODUCTION")
     add_module(t, 9, "💀 Mort de vieillesse",                 "ENABLE_AGE_DEATH")
+    add_module(t, 10, "💬 Communication (lettres)",           "ENABLE_COMMUNICATION")
+    add_module(t, 11, "⛰ Altitude (ombrage du relief)",       "ENABLE_ALTITUDE")
+    add_module(t, 12, "🧊 Relief 2.5D (affichage en blocs)",  "ENABLE_ALTITUDE_2_5D", "Altitude")
 
 
-    section(t, 10, "Logs")
+    section(t, 13, "Logs")
     tk.Label(t, text="Niveau de log", bg=BG, fg=FG,
-            font=("Arial", 10)).grid(row=11, column=0, sticky="w", padx=20, pady=6)
+            font=("Arial", 10)).grid(row=14, column=0, sticky="w", padx=20, pady=6)
     log_level_var = tk.StringVar(value=config.LOG_LEVEL)
     for i, (level, desc) in enumerate([
         ("DEBUG",   "tout logger (actions, perceptions...)"),
@@ -219,7 +252,7 @@ def run_config_gui():
             variable=log_level_var, value=level,
             bg=BG, fg=FG, activebackground=BG, selectcolor="#333355",
             font=("Arial", 9), anchor="w",
-        ).grid(row=12+i, column=0, columnspan=2, sticky="w", padx=30, pady=2)
+        ).grid(row=15+i, column=0, columnspan=2, sticky="w", padx=30, pady=2)
         
     # Dépendances automatiques en cascade
     def on_biomes_toggle(*_):
@@ -231,8 +264,18 @@ def run_config_gui():
         if not module_vars["ENABLE_SEASONS"].get():
             module_vars["ENABLE_WEATHER"].set(False)
 
+    def on_altitude_toggle(*_):
+        if not module_vars["ENABLE_ALTITUDE"].get():
+            module_vars["ENABLE_ALTITUDE_2_5D"].set(False)
+
     module_vars["ENABLE_BIOMES"].trace_add("write", on_biomes_toggle)
     module_vars["ENABLE_SEASONS"].trace_add("write", on_seasons_toggle)
+    module_vars["ENABLE_ALTITUDE"].trace_add("write", on_altitude_toggle)
+
+    def on_infinite_toggle(*_):
+        if infinite_var.get():
+            module_vars["ENABLE_MIGRATION"].set(False)
+    infinite_var.trace_add("write", on_infinite_toggle)
     # ── Onglet 9 : IA ────────────────────────────────────────────
     t = make_tab(nb, "🤖 IA")
 
@@ -272,6 +315,93 @@ def run_config_gui():
     for var in policy_sliders.values():
         var.trace_add("write", update_total)
         
+    # ── Onglet : Contrôles (clavier + souris) ───────────────────
+    t = make_tab(nb, "🎮 Contrôles")
+    section(t, 0, "Clavier — cliquez sur une touche pour la réassigner")
+
+    key_binding_vars = {}
+    capture_state = {"active_action": None}
+
+    def _format_event_as_binding(event):
+        mods = []
+        if event.state & 0x0004:
+            mods.append("Control")
+        if event.state & 0x0001:
+            mods.append("Shift")
+        if event.state & 0x0008 or event.state & 0x20000:
+            mods.append("Alt")
+        keysym = event.keysym
+        if not mods:
+            if keysym == "plus":
+                return "+"
+            if keysym == "minus":
+                return "-"
+            if len(keysym) == 1:
+                return keysym.lower()
+            return f"<{keysym}>"
+        return f"<{'-'.join(mods)}-{keysym}>"
+
+    def _on_key_captured(event):
+        action = capture_state["active_action"]
+        if action is None:
+            return
+        binding = _format_event_as_binding(event)
+        key_binding_vars[action].set(binding)
+        capture_state["active_action"] = None
+        root.unbind("<KeyPress>", capture_state.get("bind_id"))
+        return "break"
+
+    def start_capture(action, btn):
+        # Un seul réassignement à la fois
+        if capture_state["active_action"] is not None:
+            return
+        capture_state["active_action"] = action
+        btn.config(text="Appuyez sur une touche…")
+        bind_id = root.bind("<KeyPress>", lambda e, a=action, b=btn: (_on_key_captured(e), b.config(text=key_binding_vars[a].get())))
+        capture_state["bind_id"] = bind_id
+
+    for i, (action, default) in enumerate(config.KEY_BINDINGS.items()):
+        var = tk.StringVar(value=default)
+        key_binding_vars[action] = var
+        label = config.KEY_BINDING_LABELS.get(action, action)
+        ttk.Label(t, text=label).grid(row=1 + i, column=0, sticky="w", padx=12, pady=3)
+        btn = tk.Button(t, textvariable=var, width=16, bg="#222244", fg=ACCENT,
+                         relief=tk.FLAT, activebackground="#333366")
+        btn.grid(row=1 + i, column=1, padx=8, pady=3, sticky="w")
+        btn.config(command=lambda a=action, b=btn: start_capture(a, b))
+
+    row_after_keys = 1 + len(config.KEY_BINDINGS)
+    section(t, row_after_keys, "Souris")
+
+    mouse_select_var = tk.StringVar(value={1: "Clic gauche", 2: "Clic molette", 3: "Clic droit"}[config.MOUSE_SELECT_BUTTON])
+    mouse_drag_var   = tk.StringVar(value={1: "Clic gauche", 2: "Clic molette", 3: "Clic droit"}[config.MOUSE_DRAG_BUTTON])
+    mouse_options = ["Clic gauche", "Clic molette", "Clic droit"]
+
+    ttk.Label(t, text="Sélectionner un agent").grid(row=row_after_keys + 1, column=0, sticky="w", padx=12, pady=3)
+    ttk.Combobox(t, textvariable=mouse_select_var, values=mouse_options, state="readonly", width=14
+                 ).grid(row=row_after_keys + 1, column=1, padx=8, pady=3, sticky="w")
+
+    ttk.Label(t, text="Déplacer la caméra (glisser — monde infini)").grid(row=row_after_keys + 2, column=0, sticky="w", padx=12, pady=3)
+    ttk.Combobox(t, textvariable=mouse_drag_var, values=mouse_options, state="readonly", width=14
+                 ).grid(row=row_after_keys + 2, column=1, padx=8, pady=3, sticky="w")
+
+    tk.Label(
+        t,
+        text="La molette zoome toujours (non réassignable).\n"
+             "Sélection et glisser-caméra doivent utiliser des boutons différents.",
+        bg=BG, fg="#888899", font=("Arial", 8), justify="left",
+    ).grid(row=row_after_keys + 3, column=0, columnspan=3, sticky="w", padx=12, pady=(4, 6))
+
+    def reset_controls():
+        for action, default in config.KEY_BINDINGS.items():
+            key_binding_vars[action].set(default)
+        mouse_select_var.set("Clic gauche")
+        mouse_drag_var.set("Clic droit")
+
+    tk.Button(t, text="↺ Réinitialiser les contrôles", command=reset_controls,
+              bg="#222244", fg=ACCENT, relief=tk.FLAT
+              ).grid(row=row_after_keys + 4, column=0, columnspan=2, pady=8, sticky="w", padx=12)
+
     # ── Bouton Lancer ────────────────────────────────────────────
     def on_launch():
         for attr, (typ, var) in fields.items():
@@ -305,7 +435,9 @@ def run_config_gui():
             ),
         }
 
-        config.YEAR_DURATION = config.SEASON_DURATION * 4
+        config.YEAR_DURATION  = config.SEASON_DURATION * 4
+        config.ALPHABET       = list("ABCDEFGHIJ")[:config.ALPHABET_SIZE]
+        config.INFINITE_WORLD = bool(infinite_var.get())
 
         for attr, var in module_vars.items():
             setattr(config, attr, bool(var.get()))
@@ -326,11 +458,25 @@ def run_config_gui():
             for name, var in policy_sliders.items()
             if var.get() > 0
 }
+        # Contrôles clavier / souris
+        mouse_map = {"Clic gauche": 1, "Clic molette": 2, "Clic droit": 3}
+        select_btn = mouse_map[mouse_select_var.get()]
+        drag_btn   = mouse_map[mouse_drag_var.get()]
+        if select_btn == drag_btn:
+            tk.messagebox.showerror(
+                "Contrôles invalides",
+                "La sélection d'agent et le glisser-caméra doivent utiliser des boutons souris différents."
+            )
+            return
+        config.MOUSE_SELECT_BUTTON = select_btn
+        config.MOUSE_DRAG_BUTTON   = drag_btn
+        config.KEY_BINDINGS = {action: var.get() for action, var in key_binding_vars.items()}
+
         launched["ok"] = True
         root.destroy()
 
     tk.Button(
-        root, text="🚀  Lancer la simulation",
+        root, text="Lancer la simulation",
         command=on_launch,
         bg="#003355", fg=ACCENT,
         font=("Arial", 12, "bold"),

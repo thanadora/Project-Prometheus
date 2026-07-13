@@ -1,6 +1,11 @@
-import random
+import config
 from dataclasses import dataclass, field
 from logger import get_logger
+from actions import (
+    ACTION_DRINK, ACTION_PICKUP, ACTION_EAT, ACTION_VOTE_MIGRATE,
+    ACTION_TO_DELTA, TIMED_ACTIONS, FREE_ACTIONS,
+    is_speak_action, speak_letter_index,
+)
 from config import (
     VISION_RADIUS,
     TOROIDAL_WORLD,
@@ -21,6 +26,7 @@ from config import (
     WEATHER_VISION,
     WEATHER_MOVE_COST,
     INVENTORY_SIZE,
+    COMM_RADIUS,
 )
 
 
@@ -47,49 +53,15 @@ class Agent:
     _prev_energy: float = 0.0
     _prev_thirst: float = 0.0
     inventory: list = field(default_factory=list)
+    spoken_letter: str = None
+    heard_letters: list = field(default_factory=list)
     policy: object = field(default=None, repr=False)
-
-# -----------------------------
-# CONSTANTES D'ACTIONS
-# -----------------------------
-ACTION_UP    = 0
-ACTION_DOWN  = 1
-ACTION_LEFT  = 2
-ACTION_RIGHT = 3
-ACTION_IDLE  = 4
-ACTION_DRINK = 5
-ACTION_VOTE_MIGRATE = 6
-ACTION_PICKUP = 7
-ACTION_EAT    = 8
-
-TIMED_ACTIONS = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_DRINK, ACTION_PICKUP, ACTION_EAT}
-FREE_ACTIONS  = {ACTION_VOTE_MIGRATE}
-
-ACTION_TO_DELTA = {
-    ACTION_UP:    (0, -1),
-    ACTION_DOWN:  (0,  1),
-    ACTION_LEFT:  (-1, 0),
-    ACTION_RIGHT: (1,  0),
-    ACTION_IDLE:  (0,  0),
-    ACTION_DRINK: (0,  0),
-}
-
-OBS_FOOD_DX   = 0
-OBS_FOOD_DY   = 1
-OBS_FOOD_DIST = 2
-OBS_ENERGY    = 3
-OBS_THIRST    = 4
-OBS_WATER_DX  = 5
-OBS_WATER_DY  = 6
-OBS_SIZE      = 7
 
 
 # -----------------------------
 # PERCEPTION
 # -----------------------------
 def perceive(agent, world):
-    import config
-
     min_food_dist  = float("inf")
     closest_food   = None
     min_water_dist = float("inf")
@@ -100,30 +72,47 @@ def perceive(agent, world):
     current_radius = VISION_RADIUS * night_ratio * weather_ratio
     vision_sq      = current_radius * current_radius
 
-    for x, y, amount in world.food.iter_food():
-        if not world.map.is_walkable(x, y):
-            continue
-        dx = x - agent.x
-        dy = y - agent.y
-        if TOROIDAL_WORLD:
-            if dx >  world.width  // 2: dx -= world.width
-            elif dx < -world.width  // 2: dx += world.width
-            if dy >  world.height // 2: dy -= world.height
-            elif dy < -world.height // 2: dy += world.height
-        dist = dx * dx + dy * dy
-        if dist > vision_sq:
-            continue
-        if dist < min_food_dist:
-            min_food_dist = dist
-            closest_food  = (dx, dy)
+    infinite = getattr(world, "infinite", False)
+
+    for dx in range(-int(current_radius), int(current_radius) + 1):
+        for dy in range(-int(current_radius), int(current_radius) + 1):
+            if infinite:
+                real_x = agent.x + dx
+                real_y = agent.y + dy
+            elif TOROIDAL_WORLD:
+                real_x = (agent.x + dx) % world.width
+                real_y = (agent.y + dy) % world.height
+            else:
+                real_x = agent.x + dx
+                real_y = agent.y + dy
+                if not (0 <= real_x < world.width and 0 <= real_y < world.height):
+                    continue
+            pos = (real_x, real_y)
+            if pos not in world.food.food_positions:
+                continue
+            dist = dx * dx + dy * dy
+            if dist > vision_sq:
+                continue
+            if dist < min_food_dist:
+                min_food_dist = dist
+                closest_food  = (dx, dy)
 
     adjacent_water = False
     if config.ENABLE_BIOMES and config.ENABLE_THIRST:
-        for x in range(max(0, agent.x - int(current_radius)),
-                       min(world.width, agent.x + int(current_radius) + 1)):
-            for y in range(max(0, agent.y - int(current_radius)),
-                           min(world.height, agent.y + int(current_radius) + 1)):
-                if world.map.biome_map.get((x, y)) != BIOME_WATER:
+        if infinite:
+            x_range = range(agent.x - int(current_radius), agent.x + int(current_radius) + 1)
+            y_range = range(agent.y - int(current_radius), agent.y + int(current_radius) + 1)
+        else:
+            x_range = range(max(0, agent.x - int(current_radius)),
+                             min(world.width, agent.x + int(current_radius) + 1))
+            y_range = range(max(0, agent.y - int(current_radius)),
+                             min(world.height, agent.y + int(current_radius) + 1))
+        for x in x_range:
+            for y in y_range:
+                # get_biome() : en mode infini, regarder autour de soi génère/charge
+                # le terrain à la demande (comme l'exploration de chunks).
+                biome = world.map.get_biome(x, y) if infinite else world.map.biome_map.get((x, y))
+                if biome != BIOME_WATER:
                     continue
                 dx   = x - agent.x
                 dy   = y - agent.y
@@ -136,10 +125,25 @@ def perceive(agent, world):
                 if dist == 1:
                     adjacent_water = True
 
+    heard_letters = []
+    if config.ENABLE_COMMUNICATION:
+        comm_sq = COMM_RADIUS * COMM_RADIUS
+        for other in world.agents:
+            if other is agent or not other.alive or not other.spoken_letter:
+                continue
+            dx = other.x - agent.x
+            dy = other.y - agent.y
+            if TOROIDAL_WORLD and not infinite:
+                dx = (dx + world.width  // 2) % world.width  - world.width  // 2
+                dy = (dy + world.height // 2) % world.height - world.height // 2
+            if dx * dx + dy * dy <= comm_sq:
+                heard_letters.append({"dx": dx, "dy": dy, "letter": other.spoken_letter, "from_id": other.id})
+
     result = {
         "food_dx": 0, "food_dy": 0, "food_dist": -1,
         "water_dx": 0, "water_dy": 0, "water_dist": -1,
         "adjacent_water": adjacent_water,
+        "heard_letters": heard_letters,
     }
     if closest_food is not None:
         result["food_dx"]   = closest_food[0]
@@ -177,12 +181,18 @@ def apply_free_action(agent, action):
     if action == ACTION_VOTE_MIGRATE:
         agent.vote_migrate = True
         return True
+    if is_speak_action(action):
+        if not config.ENABLE_COMMUNICATION:
+            return False
+        idx = speak_letter_index(action)
+        if 0 <= idx < len(config.ALPHABET):
+            agent.spoken_letter = config.ALPHABET[idx]
+            return True
+        return False
     return False
 
 
 def apply_timed_action(agent, world, action):
-    import config
-
     if not agent.alive:
         return
 
@@ -199,7 +209,7 @@ def apply_timed_action(agent, world, action):
         if len(agent.inventory) < INVENTORY_SIZE:
             gain = world.food.consume_food(world.map.biome_map, (agent.x, agent.y))
             if gain > 0:
-                agent.inventory.append(gain)
+                agent.inventory.append({"type": config.OBJECT_TYPE_FOOD, "value": gain})
                 get_logger().debug(world.tick, f"Agent #{agent.id} ramasse nourriture (+{gain}) | inventaire={agent.inventory}")
         return
 
@@ -207,9 +217,10 @@ def apply_timed_action(agent, world, action):
         if not config.ENABLE_INVENTORY:
             return
         if agent.inventory:
-            gain = agent.inventory.pop(0)
-            agent.energy = min(MAX_ENERGY, agent.energy + gain)
-            get_logger().debug(world.tick, f"Agent #{agent.id} mange depuis poche (+{gain}) | énergie={agent.energy:.1f}")
+            item = agent.inventory.pop(0)
+            if item["type"] == config.OBJECT_TYPE_FOOD:
+                agent.energy = min(MAX_ENERGY, agent.energy + item["value"])
+            get_logger().debug(world.tick, f"Agent #{agent.id} mange depuis poche ({item['type']} +{item['value']}) | énergie={agent.energy:.1f}")
         return
 
     if action not in ACTION_TO_DELTA:
@@ -219,7 +230,9 @@ def apply_timed_action(agent, world, action):
     new_x  = agent.x + dx
     new_y  = agent.y + dy
 
-    if TOROIDAL_WORLD:
+    if getattr(world, "infinite", False):
+        pass  # pas de bords à vérifier
+    elif TOROIDAL_WORLD:
         new_x %= world.width
         new_y %= world.height
     else:
@@ -243,7 +256,6 @@ def apply_timed_action(agent, world, action):
 # VIE
 # -----------------------------
 def _update_thirst(agent, world):
-    import config
     if not config.ENABLE_THIRST:
         return
 
@@ -264,8 +276,8 @@ def _update_thirst(agent, world):
         if agent.energy <= 0:
             agent.alive = False
 
+
 def update_agent_life(agent, world):
-    import config
     log = get_logger()
     agent.age += 1
     idle_cost  = NIGHT_IDLE_COST if world.is_night() else IDLE_COST
@@ -285,12 +297,14 @@ def update_agent_life(agent, world):
 # THINK (appelé par world_phase)
 # -----------------------------
 def think(agent, world, policy):
-    agent.perception  = perceive(agent, world)
-    agent.observation = build_observation(agent, world)
+    agent.perception   = perceive(agent, world)
+    agent.observation  = build_observation(agent, world)
+    agent.heard_letters = agent.perception.get("heard_letters", [])
 
     agent._prev_energy = agent.energy
     agent._prev_thirst = agent.thirst
 
-    agent.vote_migrate = False
+    agent.vote_migrate  = False
+    agent.spoken_letter = None
     effective_policy = agent.policy if agent.policy is not None else policy
     agent.free_actions, agent.pending_action = effective_policy.decide(agent, world)

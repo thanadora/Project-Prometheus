@@ -1,9 +1,18 @@
+"""
+world.py — Définition du monde et boucle principale (world_phase).
+
+Les logiques métier sont déléguées à des modules dédiés :
+  weather.py      → météo et humidité du sol
+  migration.py    → vote et migration collective
+  reproduction.py → naissance de nouveaux agents
+"""
+
 import random
 from dataclasses import dataclass, field
 from typing import List
 from logger import get_logger
-from policy_registry import distribute_policies
 
+import config
 from config import (
     WORLD_WIDTH,
     WORLD_HEIGHT,
@@ -17,26 +26,22 @@ from config import (
     SEASON_SUMMER,
     SEASON_AUTUMN,
     SEASON_WINTER,
-    WEATHER_FROST,
     WEATHER_CLEAR,
-    WEATHER_RAIN,
-    WEATHER_STORM,
-    WEATHER_DROUGHT,
-    WEATHER_MOISTURE_DELTA,
-    WEATHER_CHANGE_PROB,
-    SEASON_WEATHER_PROBS,
-    SOIL_MOISTURE_MIN,
-    SOIL_MOISTURE_MAX,
-    SOIL_MOISTURE_INIT,
     BIOME_WATER,
     BIOME_PRAIRIE,
-    MIGRATION_VOTE_THRESHOLD,
-    MIGRATION_COOLDOWN,
     MAX_THIRST,
+    SOIL_MOISTURE_INIT,
+    FOOD_GROWTH_RADIUS,
+    CHUNK_UNLOAD_DISTANCE,
+    CHUNK_UNLOAD_INTERVAL,
 )
-from agent import Agent, apply_free_action, apply_timed_action, think, update_agent_life
+from agent import Agent, think, apply_free_action, apply_timed_action, update_agent_life
 from map import GameMap
 from food import FoodSystem
+from weather import update_weather
+from migration import check_migration
+from reproduction import reproduce
+from policy_registry import distribute_policies
 
 
 # -----------------------------
@@ -56,6 +61,9 @@ class World:
     soil_moisture: float = SOIL_MOISTURE_INIT
     migration_count: int = 0
     last_migration_tick: int = -9999
+    _land_cache: dict = field(default_factory=dict, repr=False)
+    _land_cache_valid: bool = True
+    infinite: bool = False
 
     def next_id(self):
         self._next_id += 1
@@ -65,15 +73,13 @@ class World:
         return (self.tick % DAY_DURATION) / DAY_DURATION
 
     def is_night(self):
-        import config
         if not config.ENABLE_DAY_NIGHT:
             return False
         return self.time_of_day() >= (1 - NIGHT_RATIO)
 
     def current_season(self):
-        import config
         if not config.ENABLE_SEASONS:
-            return SEASON_SPRING   # saison fixe
+            return SEASON_SPRING
         idx = (self.tick % YEAR_DURATION) // SEASON_DURATION
         return [SEASON_SPRING, SEASON_SUMMER, SEASON_AUTUMN, SEASON_WINTER][idx]
 
@@ -82,118 +88,84 @@ class World:
 
 
 # -----------------------------
-# REWARD (signal d'apprentissage)
+# REWARD
 # -----------------------------
 def compute_reward(agent, prev_energy, prev_thirst):
-    """
-    Calcule la récompense après exécution des actions du tick.
-    Défini ici (dans l'environnement) car c'est l'environnement
-    qui décide ce qui est bon ou mauvais, pas l'agent.
-    """
     if not agent.alive:
         return -10.0
-
-    reward = 0.0
-    reward += (agent.energy - prev_energy) * 0.1
+    reward  = (agent.energy - prev_energy) * 0.1
     reward += (agent.thirst - prev_thirst) * 0.05
-
     if agent.energy < 20:
         reward -= 0.5
     if agent.thirst < 20:
         reward -= 0.3
-
     return reward
-
-
-# -----------------------------
-# MÉTÉO
-# -----------------------------
-def update_weather(world):
-    old_weather = world.weather
-    if world.tick % DAY_DURATION == 0:
-        if random.random() < WEATHER_CHANGE_PROB:
-            season   = world.current_season()
-            weathers = [WEATHER_CLEAR, WEATHER_RAIN, WEATHER_STORM, WEATHER_DROUGHT, WEATHER_FROST]
-            world.weather = random.choices(weathers, weights=SEASON_WEATHER_PROBS[season], k=1)[0]
-
-        if old_weather == WEATHER_STORM   and world.weather == WEATHER_STORM:
-            _expand_water(world)
-        if old_weather == WEATHER_DROUGHT and world.weather == WEATHER_DROUGHT:
-            _shrink_water(world)
-
-    delta = WEATHER_MOISTURE_DELTA[world.weather]
-    world.soil_moisture = max(SOIL_MOISTURE_MIN, min(SOIL_MOISTURE_MAX, world.soil_moisture + delta))
-
-
-def _shrink_water(world):
-    to_land = {
-        (x, y)
-        for (x, y), biome in world.map.biome_map.items()
-        if biome == BIOME_WATER
-        and any(
-            world.map.biome_map.get((x + dx, y + dy)) != BIOME_WATER
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-            if 0 <= x + dx < world.width and 0 <= y + dy < world.height
-        )
-    }
-    world.map.update_biomes(to_land, BIOME_PRAIRIE)
-    for pos in to_land:
-        world.food.clear_position(pos)
-
-
-def _expand_water(world):
-    log = get_logger()
-    new_water = {
-        (x + dx, y + dy)
-        for (x, y), biome in world.map.biome_map.items()
-        if biome == BIOME_WATER
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        if 0 <= x + dx < world.width and 0 <= y + dy < world.height
-        and world.map.biome_map.get((x + dx, y + dy)) != BIOME_WATER
-    }
-    world.map.update_biomes(new_water, BIOME_WATER)
-    for pos in new_water:
-        world.food.clear_position(pos)
-    for agent in world.agents:
-        if not world.map.is_walkable(agent.x, agent.y):
-            agent.alive = False
-            log.warning(world.tick, f"Agent #{agent.id} noyé par expansion de l'eau en ({agent.x},{agent.y})")
 
 
 # -----------------------------
 # INIT
 # -----------------------------
-def _new_map_and_food(width, height):
-    game_map = GameMap(width=width, height=height)
+def _new_map_and_food(width, height, infinite=False):
+    game_map = GameMap(width=width, height=height, infinite=infinite)
     game_map.initialize()
     food = FoodSystem(width=width, height=height)
-    food.initialize(game_map.biome_map)
+    if infinite:
+        food.initialize(game_map.biome_map, infinite=True, game_map=game_map,
+                         center=(0, 0), radius=FOOD_GROWTH_RADIUS * 2)
+    else:
+        food.initialize(game_map.biome_map)
     return game_map, food
 
 
+def _find_walkable_near(game_map, center, min_count):
+    """Cherche des cases praticables en élargissant un anneau autour de `center`,
+    utilisé au lancement du mode infini pour trouver où poser les premiers agents
+    sans avoir à générer toute une carte."""
+    cx, cy = center
+    found  = []
+    radius = 0
+    max_radius = 300
+    while len(found) < min_count and radius < max_radius:
+        radius += 5
+        found = [
+            (x, y)
+            for x in range(cx - radius, cx + radius + 1)
+            for y in range(cy - radius, cy + radius + 1)
+            if game_map.is_walkable(x, y)
+        ]
+    random.shuffle(found)
+    return found
+
+
 def initialize_world():
-    import config
-    log = get_logger()
-    world = World(width=WORLD_WIDTH, height=WORLD_HEIGHT)
-    world.map, world.food = _new_map_and_food(world.width, world.height)
+    log      = get_logger()
+    infinite = config.INFINITE_WORLD
+    world    = World(width=WORLD_WIDTH, height=WORLD_HEIGHT, infinite=infinite)
+    world.map, world.food = _new_map_and_food(world.width, world.height, infinite)
 
     if not config.ENABLE_BIOMES:
-        # Remplace tout par prairie, retire l'eau
-        from config import BIOME_PRAIRIE
-        world.map.biome_map = {
-            (x, y): BIOME_PRAIRIE
+        if infinite:
+            log.warning(0, "Biomes désactivés en mode monde infini — biomes réactivés (nécessaires à la génération à la demande)")
+        else:
+            world.map.biome_map = {
+                (x, y): BIOME_PRAIRIE
+                for x in range(world.width)
+                for y in range(world.height)
+            }
+            world.food.initialize(world.map.biome_map)
+
+    if infinite:
+        # Un seul groupe d'agents au centre — libre de s'étendre ensuite,
+        # comme au démarrage d'un serveur Minecraft.
+        walkable = _find_walkable_near(world.map, (0, 0), INITIAL_AGENT_COUNT * 4)
+    else:
+        walkable = [
+            (x, y)
             for x in range(world.width)
             for y in range(world.height)
-        }
-        world.food.initialize(world.map.biome_map)
-
-    walkable = [
-        (x, y)
-        for x in range(world.width)
-        for y in range(world.height)
-        if world.map.is_walkable(x, y)
-    ]
-    random.shuffle(walkable)
+            if world.map.is_walkable(x, y)
+        ]
+        random.shuffle(walkable)
 
     for x, y in walkable[:INITIAL_AGENT_COUNT]:
         world.agents.append(Agent(
@@ -205,16 +177,13 @@ def initialize_world():
             born_tick=0,
         ))
 
-
-    log.info(0, f"Monde initialisé — {len(world.agents)} agents — biomes={'ON' if config.ENABLE_BIOMES else 'OFF'}")
-    
-    from policy_registry import distribute_policies
+    log.info(0, f"Monde initialisé — {len(world.agents)} agents — biomes={'ON' if config.ENABLE_BIOMES else 'OFF'} — infini={'ON' if infinite else 'OFF'}")
     distribute_policies(world.agents, config.POLICY_DISTRIBUTION)
     return world
 
 
 # -----------------------------
-# COLLISIONS
+# COLLISIONS & NETTOYAGE
 # -----------------------------
 def _resolve_collisions(world):
     agents = list(world.agents)
@@ -232,8 +201,53 @@ def _resolve_collisions(world):
             eaten.add(pos)
 
 
+def _active_cells(world):
+    """Cases autour de chaque agent vivant où la nourriture doit pousser —
+    équivalent des "chunks chargés" autour des joueurs sur un serveur Minecraft."""
+    r     = FOOD_GROWTH_RADIUS
+    r_sq  = r * r
+    cells = set()
+    for agent in world.agents:
+        if not agent.alive:
+            continue
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                if dx * dx + dy * dy > r_sq:
+                    continue
+                pos = (agent.x + dx, agent.y + dy)
+                world.map.get_biome(*pos)  # génère/charge la case au besoin
+                cells.add(pos)
+    return cells
+
+
+def _unload_far_chunks(world):
+    """Libère de la mémoire les cases de biome/nourriture trop loin de tout
+    agent vivant. Elles seront régénérées à l'identique (même seed) si un
+    agent y repasse un jour."""
+    if world.tick % CHUNK_UNLOAD_INTERVAL != 0:
+        return
+
+    agents_pos = [(a.x, a.y) for a in world.agents if a.alive]
+    if not agents_pos:
+        return
+    d = CHUNK_UNLOAD_DISTANCE
+
+    def near_any_agent(pos):
+        px, py = pos
+        for ax, ay in agents_pos:
+            if abs(px - ax) <= d and abs(py - ay) <= d:
+                return True
+        return False
+
+    world.map.biome_map = {p: b for p, b in world.map.biome_map.items() if near_any_agent(p)}
+    world.food.food_map = {p: v for p, v in world.food.food_map.items() if near_any_agent(p)}
+    world.food.food_positions &= set(world.food.food_map.keys())
+    world._land_cache = {}
+    world._land_cache_valid = True
+
+
 def _remove_dead_agents(world):
-    log = get_logger()
+    log  = get_logger()
     dead = [a for a in world.agents if not a.alive]
     for a in dead:
         log.info(world.tick, f"Agent #{a.id} mort | énergie={a.energy:.1f} soif={a.thirst:.1f} âge={a.age} gén={a.generation}")
@@ -242,175 +256,62 @@ def _remove_dead_agents(world):
 
 
 # -----------------------------
-# REPRODUCTION
-# -----------------------------
-def _reproduce(agent, world, policy):
-    """
-    La décision de se reproduire est déléguée à policy.
-    La mécanique (trouver une case libre, créer le bébé) reste ici.
-    """
-    if not policy.decide_reproduce(agent, world):
-        return None
-
-    occupied  = {(a.x, a.y) for a in world.agents}
-    neighbors = [
-        (agent.x + dx, agent.y + dy)
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        if 0 <= agent.x + dx < world.width
-        and 0 <= agent.y + dy < world.height
-        and (agent.x + dx, agent.y + dy) not in occupied
-        and world.map.is_walkable(agent.x + dx, agent.y + dy)
-    ]
-    if not neighbors:
-        return None
-
-    x, y          = random.choice(neighbors)
-    agent.energy -= 40
-    log = get_logger()
-    log.info(world.tick, f"Agent #{agent.id} se reproduit → bébé gén.{agent.generation+1} en ({x},{y})")
-    return Agent(
-        id=-1,
-        x=x, y=y,
-        generation=agent.generation + 1,
-        born_tick=world.tick,
-        energy=40,
-        thirst=50,
-        policy=agent.policy
-    )
-
-
-# -----------------------------
-# MIGRATION
-# -----------------------------
-def _reachable_land(world, sx, sy):
-    visited, stack = set(), [(sx, sy)]
-    while stack:
-        x, y = stack.pop()
-        if (x, y) in visited:
-            continue
-        if not (0 <= x < world.width and 0 <= y < world.height):
-            continue
-        if not world.map.is_walkable(x, y):
-            continue
-        visited.add((x, y))
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            stack.append((x + dx, y + dy))
-    return visited
-
-
-def _check_migration(world):
-    agents = [a for a in world.agents if a.alive]
-    if not agents or len(agents) > 5:
-        return False
-    if world.tick - world.last_migration_tick < MIGRATION_COOLDOWN:
-        return False
-
-    votes = sum(1 for a in agents if a.vote_migrate)
-    if votes / len(agents) < MIGRATION_VOTE_THRESHOLD:
-        return False
-
-    total_land = sum(1 for b in world.map.biome_map.values() if b != BIOME_WATER)
-    min_land   = max(1, int(total_land * 0.10))
-    land_cache = {}
-
-    def get_land(a):
-        key = (a.x, a.y)
-        if key not in land_cache:
-            land_cache[key] = _reachable_land(world, a.x, a.y)
-        return land_cache[key]
-
-    mobile = [a for a in agents if len(get_land(a)) >= min_land]
-    if not mobile:
-        return False
-
-    new_map, new_food = _new_map_and_food(world.width, world.height)
-    walkable = [
-        (x, y)
-        for x in range(world.width)
-        for y in range(world.height)
-        if new_map.is_walkable(x, y)
-    ]
-    random.shuffle(walkable)
-
-    occupied = set()
-    for agent in mobile:
-        available = [p for p in walkable if p not in occupied]
-        if not available:
-            agent.alive = False
-            continue
-        agent.x, agent.y = available[0]
-        occupied.add(available[0])
-
-    world.map             = new_map
-    world.food            = new_food
-    world.soil_moisture   = SOIL_MOISTURE_INIT
-    world.weather         = WEATHER_CLEAR
-    world.migration_count += 1
-    world.last_migration_tick = world.tick
-    log = get_logger()
-    log.info(world.tick, f"MIGRATION #{world.migration_count} — {len(mobile)} agents ont migré")
-    return True
-
-
-# -----------------------------
 # BOUCLE PRINCIPALE
 # -----------------------------
 def world_phase(world, policy):
-    import config  # lecture dynamique des flags (modifiés par config_gui)
-
-    # 1. météo
+    # 1. Météo
     if config.ENABLE_WEATHER and config.ENABLE_BIOMES:
         update_weather(world)
 
-    # 2. perception + décision
+    # 2. Boucle 1 : perception + décision + actions gratuites
+    # Tout le monde perçoit le même monde avant que quiconque agisse.
+    # free_actions (vote_migrate) n'affecte que l'agent lui-même,
+    # donc les fusionner avec think() ne change pas le comportement des autres.
     for agent in world.agents:
-        if agent.alive:
-            think(agent, world, policy)
+        if not agent.alive:
+            continue
+        think(agent, world, policy)
+        for action in agent.free_actions:
+            apply_free_action(agent, action)
 
-    # 3. actions gratuites
-    for agent in world.agents:
-        if agent.alive:
-            for action in agent.free_actions:
-                apply_free_action(agent, action)
+    # 3. Migration — après les votes, avant les actions physiques
+    # Inutile en monde infini : sans bords, un groupe en détresse peut simplement
+    # continuer à se déplacer plutôt que d'être téléporté ailleurs.
+    if config.ENABLE_MIGRATION and not world.infinite:
+        check_migration(world)
 
-    # 4. migration
-    if config.ENABLE_MIGRATION:
-        _check_migration(world)
-
-    # 5. action principale
-    for agent in world.agents:
-        if agent.alive:
-            apply_timed_action(agent, world, agent.pending_action)
-
-    # 6. vieillissement + reproduction
+    # 4. Boucle 2 : action principale + vieillissement + reproduction + récompense
     newborns = []
     for agent in world.agents:
         if not agent.alive:
             continue
+        apply_timed_action(agent, world, agent.pending_action)
+        if not agent.alive:
+            continue
         update_agent_life(agent, world)
         if agent.alive and config.ENABLE_REPRODUCTION:
-            baby = _reproduce(agent, world, policy)
+            baby = reproduce(agent, world, policy)
             if baby:
                 newborns.append(baby)
-
-    # 7. récompenses
-    for agent in world.agents:
         if agent.alive:
             agent.last_reward = compute_reward(agent, agent._prev_energy, agent._prev_thirst)
-
-    # 8. nettoyage + naissances
+    # 5. Nettoyage + naissances
     _resolve_collisions(world)
     _remove_dead_agents(world)
 
     log = get_logger()
-    n = len(world.agents)
-    if n <= 5:
-        log.warning(world.tick, f"Population critique : {n} agents restants")
+    if len(world.agents) <= 5:
+        log.warning(world.tick, f"Population critique : {len(world.agents)} agents restants")
 
     for baby in newborns:
         baby.id = world.next_id()
     world.agents.extend(newborns)
 
-    # 9. croissance nourriture
-    world.food.grow_food(world.map.biome_map, world.soil_moisture)
+    # 6. Croissance nourriture
+    if world.infinite:
+        cells = _active_cells(world)
+        world.food.grow_food(world.map.biome_map, world.soil_moisture, cells=cells)
+        _unload_far_chunks(world)
+    else:
+        world.food.grow_food(world.map.biome_map, world.soil_moisture)
     world.tick += 1

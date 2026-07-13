@@ -8,7 +8,7 @@ L'environnement appelle à chaque tick :
     should_reproduce           = policy.decide_reproduce(agent, world)
 
 Entrées disponibles dans agent :
-    agent.observation  → vecteur normalisé (indices OBS_* dans agent.py)
+    agent.observation  → vecteur normalisé (indices OBS_* dans actions.py)
     agent.perception   → dict brut (distances, cases adjacentes, etc.)
     agent.energy, agent.thirst, agent.age, agent.generation, ...
 
@@ -19,9 +19,10 @@ Sorties attendues :
 
 import random
 import config
-from agent import (
+from actions import (
     ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT,
-    ACTION_IDLE, ACTION_DRINK, ACTION_VOTE_MIGRATE, ACTION_PICKUP, ACTION_EAT,
+    ACTION_IDLE, ACTION_DRINK, ACTION_VOTE_MIGRATE,
+    ACTION_PICKUP, ACTION_EAT, action_speak,
 )
 from config import (
     MAX_AGE,
@@ -52,14 +53,13 @@ class HardcodedPolicy(BasePolicy):
         return agent.energy > 80 and agent.thirst > 40
 
     def _free_actions(self, agent):
-        free = []
         if not config.ENABLE_MIGRATION:
-            return free
+            return []
         if (agent.energy < MIGRATION_DISTRESS_ENERGY
                 or agent.thirst < MIGRATION_DISTRESS_THIRST
                 or agent.age >= MIGRATION_AGE_THRESHOLD):
-            free.append(ACTION_VOTE_MIGRATE)
-        return free
+            return [ACTION_VOTE_MIGRATE]
+        return []
 
     def _timed_action(self, agent):
         p         = agent.perception
@@ -69,7 +69,7 @@ class HardcodedPolicy(BasePolicy):
         water_dx  = p["water_dx"]
         water_dy  = p["water_dy"]
 
-        # Soif
+        # Soif critique → aller boire
         if config.ENABLE_THIRST and config.ENABLE_BIOMES:
             if agent.thirst < THIRST_CRITICAL and p["adjacent_water"]:
                 return ACTION_DRINK
@@ -95,15 +95,20 @@ class HardcodedPolicy(BasePolicy):
 
 
 class RandomPolicy(BasePolicy):
-    """Actions aléatoires — sert de baseline basse."""
+    """Actions aléatoires — sert de baseline basse.
+
+    NOTE : parle aussi une lettre au hasard de temps en temps si la communication
+    est activée — c'est juste pour visualiser/tester le mécanisme (aucune logique,
+    pure baseline aléatoire, comme le reste de cette policy). À retirer si tu veux
+    une baseline totalement silencieuse.
+    """
 
     def decide(self, agent, world):
-        import random
-        action = random.choice([
-            ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE
-        ])
-        return [], action
+        action = random.choice([ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE])
+        free_actions = []
+        if config.ENABLE_COMMUNICATION and config.ALPHABET and random.random() < 0.3:
+            free_actions.append(action_speak(random.randrange(len(config.ALPHABET))))
+        return free_actions, action
 
     def decide_reproduce(self, agent, world):
-        import random
         return random.random() < 0.01

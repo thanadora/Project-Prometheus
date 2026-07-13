@@ -23,6 +23,14 @@ def make_policy(name):
     return REGISTRY[name]["class"]()
 
 
+def policy_name(policy):
+    """Retourne le nom d'une instance de policy, ou None si inconnue."""
+    for name, entry in REGISTRY.items():
+        if isinstance(policy, entry["class"]):
+            return name
+    return None
+
+
 def distribute_policies(agents, distribution):
     """
     Assigne une policy à chaque agent selon une distribution.

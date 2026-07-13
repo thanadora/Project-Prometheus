@@ -4,6 +4,58 @@ VISION_RADIUS = 5
 TOROIDAL_WORLD = False
 MAX_SIMULATION_STEPS = 10000
 
+# -----------------------------
+# MONDE INFINI (façon Minecraft)
+# -----------------------------
+# Option de lancement, indépendante du monde "classique" à bords fixes.
+# Quand elle est activée : plus de bords, plus de migration (inutile sans bords),
+# la carte/nourriture sont générées à la demande autour des agents.
+INFINITE_WORLD          = False
+INFINITE_VIEW_WIDTH     = 40   # largeur de la fenêtre de caméra (en cases)
+INFINITE_VIEW_HEIGHT    = 30   # hauteur de la fenêtre de caméra (en cases)
+FOOD_GROWTH_RADIUS      = 12   # rayon (cases) autour de chaque agent où la nourriture pousse
+CHUNK_UNLOAD_DISTANCE   = 60   # cases au-delà desquelles une zone visitée est libérée de la mémoire
+CHUNK_UNLOAD_INTERVAL   = 300  # ticks entre deux passages de nettoyage mémoire
+
+# -----------------------------
+# CONTRÔLES (personnalisables depuis les paramètres de lancement)
+# -----------------------------
+# Valeurs = séquences de bind Tkinter valides (ex: "<space>", "+", "<Control-s>").
+KEY_BINDINGS = {
+    "pause":        "<space>",
+    "speed_up":     "+",
+    "speed_down":   "-",
+    "fast_forward": "f",
+    "toggle_debug": "d",
+    "save":         "<Control-s>",
+    "load":         "<Control-o>",
+    "pan_up":       "<Up>",
+    "pan_down":     "<Down>",
+    "pan_left":     "<Left>",
+    "pan_right":    "<Right>",
+    "next_agent":   "<Tab>",
+    "prev_agent":   "<Shift-Tab>",
+}
+# Labels lisibles pour l'écran de paramètres / l'affichage in-game
+KEY_BINDING_LABELS = {
+    "pause":        "Pause / Reprendre",
+    "speed_up":     "Accélérer",
+    "speed_down":   "Ralentir",
+    "fast_forward": "Avance rapide",
+    "toggle_debug": "Panneau debug",
+    "save":         "Sauvegarder",
+    "load":         "Charger",
+    "pan_up":       "Caméra ↑",
+    "pan_down":     "Caméra ↓",
+    "pan_left":     "Caméra ←",
+    "pan_right":    "Caméra →",
+    "next_agent":   "Agent suivant",
+    "prev_agent":   "Agent précédent",
+}
+# Boutons souris : 1 = clic gauche, 2 = clic molette, 3 = clic droit
+MOUSE_SELECT_BUTTON = 1   # sélectionner un agent
+MOUSE_DRAG_BUTTON   = 3   # glisser pour déplacer la caméra (monde infini)
+
 # Énergie
 MOVE_COST = 1
 IDLE_COST = 0.6
@@ -31,6 +83,38 @@ BIOME_FOREST  = 3
 WATER_THRESHOLD   = 0.38
 FOREST_THRESHOLD  = 0.45
 PRAIRIE_THRESHOLD = 0.60
+
+# -----------------------------
+# ALTITUDE
+# -----------------------------
+# ENABLE_ALTITUDE : conserve la valeur de bruit (0..1) par case et l'utilise
+# pour ombrer les couleurs de biome (relief cosmétique). Actif par défaut
+# dès que les biomes sont actifs.
+# ENABLE_ALTITUDE_2_5D : option d'affichage supplémentaire (désactivée par
+# défaut) qui, en plus de l'ombrage, décale visuellement chaque case selon
+# son altitude pour donner un effet de relief façon blocs/2.5D. Purement
+# visuel pour l'instant — n'affecte ni le déplacement ni la visibilité.
+ENABLE_ALTITUDE      = True
+ENABLE_ALTITUDE_2_5D = False
+
+# Le bruit de Perlin (3 octaves) reste naturellement proche de 0.5 — sans
+# étirement, les écarts d'altitude sont trop subtils pour se voir. On étire
+# donc l'écart à la moyenne avant de l'utiliser pour l'ombrage/le relief.
+ALTITUDE_CONTRAST      = 4.0    # facteur d'étirement de l'écart à 0.5
+ALTITUDE_SHADE_STRENGTH = 0.40  # 0 = pas d'ombrage, 1 = contraste maximal
+ALTITUDE_MAX_OFFSET     = 14    # décalage vertical max (px, à zoom normal) en mode 2.5D
+ALTITUDE_BANDS          = 5     # nombre de paliers d'altitude (façon carte topographique)
+ALTITUDE_CONTOUR_COLOR  = "#333333"  # couleur des lignes de niveau entre paliers
+
+# Teinte supplémentaire pour le palier le plus haut / le plus bas : au-delà
+# du simple éclaircissement, on tire la couleur vers un gris rocheux (sommet)
+# ou un bleu-gris sombre (creux), pour que le relief le plus extrême se
+# reconnaisse d'un coup d'œil et ne dépende pas de la couleur du biome en
+# dessous. Prépare aussi le terrain pour un futur biome "montagne" dédié.
+ALTITUDE_PEAK_COLOR    = "#d9d3c1"
+ALTITUDE_PEAK_BLEND    = 0.40
+ALTITUDE_VALLEY_COLOR  = "#1a2230"
+ALTITUDE_VALLEY_BLEND  = 0.20
 
 BIOME_COLORS = {
     BIOME_WATER:   "#1a3a5c",
@@ -159,6 +243,11 @@ MIGRATION_DISTRESS_THIRST = 5.0   # soif critique
 # Intervalle minimum entre deux migrations (en ticks) pour éviter les migrations en boucle
 MIGRATION_COOLDOWN        = 200
 
+# Taille de population max en dessous de laquelle une migration collective peut encore
+# se déclencher (au-delà, on considère que téléporter toute la colonie n'a plus de sens).
+# Avant, ce seuil était écrit en dur (5) dans migration.py — maintenant c'est réglable.
+MIGRATION_MAX_AGENTS      = 30
+
 # Seuil d'âge à partir duquel un agent vote en détresse (proche de la mort naturelle)
 MIGRATION_AGE_THRESHOLD   = MAX_AGE - 30
 
@@ -175,6 +264,17 @@ INVENTORY_SIZE = 3
 ACTION_PICKUP  = 7
 ACTION_EAT     = 8
 
+# -----------------------------
+# OBJETS (inventaire)
+# -----------------------------
+# Chaque objet de l'inventaire est un dict {"type": ..., "value": ...}.
+# Un seul type existe pour l'instant (nourriture) ; la structure est prête pour en
+# ajouter d'autres plus tard (eau transportable, matériaux...) sans tout refactorer.
+OBJECT_TYPE_FOOD = "food"
+OBJECT_TYPES = {
+    OBJECT_TYPE_FOOD: {"label": "Nourriture", "icon": "🍖"},
+}
+
 ENABLE_THIRST      = True
 ENABLE_BIOMES      = True
 ENABLE_DAY_NIGHT   = True
@@ -184,6 +284,17 @@ ENABLE_MIGRATION   = True
 ENABLE_INVENTORY   = True
 ENABLE_REPRODUCTION = True
 ENABLE_AGE_DEATH   = True
+
+# -----------------------------
+# COMMUNICATION (lettres)
+# -----------------------------
+# Mécanisme brut : un agent peut "dire" une lettre par tick (action libre, ne coûte pas de temps).
+# Les agents voisins la perçoivent. Aucune signification n'est câblée en dur : si un langage
+# doit émerger, ce sera via une policy (évolutive/apprenante) qui reste à construire séparément.
+ENABLE_COMMUNICATION = True
+ALPHABET_SIZE        = 5                                   # nombre de lettres distinctes (2 à 10)
+ALPHABET             = list("ABCDEFGHIJ")[:ALPHABET_SIZE]  # recalculé depuis ALPHABET_SIZE
+COMM_RADIUS          = 5                                   # rayon (cases) dans lequel une lettre est entendue
 
 LOG_LEVEL = "INFO"   # DEBUG / INFO / WARNING / ERROR
 
