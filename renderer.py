@@ -5,6 +5,7 @@ Séparé de gui.py pour que SimulationGUI ne gère que
 les événements et la boucle de simulation.
 """
 
+import colorsys
 import config
 from config import (
     CELL_SIZE,
@@ -23,7 +24,6 @@ from config import (
     WEATHER_VISION,
     INVENTORY_SIZE,
     ENABLE_COMMUNICATION,
-    ALTITUDE_CONTRAST,
     ALTITUDE_SHADE_STRENGTH,
     ALTITUDE_MAX_OFFSET,
     ALTITUDE_BANDS,
@@ -35,6 +35,7 @@ from config import (
 )
 from actions import action_label
 from policy_registry import REGISTRY, policy_name
+from map import stretch_altitude, altitude_band
 
 
 # =========================================================
@@ -54,35 +55,6 @@ def top_margin():
     if config.ENABLE_ALTITUDE and config.ENABLE_ALTITUDE_2_5D:
         return TOP_MARGIN
     return 0
-
-
-import math
-import colorsys
-
-def stretch_altitude(altitude):
-    """Étire l'écart à la moyenne (0.5) pour compenser le fait que le bruit
-    de Perlin reste naturellement proche de 0.5 — sans ça, les différences
-    de relief sont quasi invisibles à l'écran.
-
-    Utilise une courbe en tanh plutôt qu'un étirement linéaire+écrêtage :
-    ça amplifie fortement les écarts près de la moyenne (là où se trouve
-    la majorité du terrain) SANS jamais complètement saturer aux extrêmes
-    — un étirement linéaire écrêté faisait que de larges pans de la carte
-    (ex : la moitié de la forêt) rendaient tous exactement la même couleur.
-    """
-    dev  = altitude - 0.5
-    span = math.tanh(0.5 * ALTITUDE_CONTRAST)
-    stretched_dev = math.tanh(dev * ALTITUDE_CONTRAST) / span * 0.5
-    return 0.5 + stretched_dev
-
-
-def altitude_band(altitude):
-    """Quantifie l'altitude en un palier discret (0..ALTITUDE_BANDS-1).
-    Des paliers nets se repèrent bien mieux à l'œil qu'un dégradé continu —
-    c'est le principe des cartes topographiques."""
-    stretched = stretch_altitude(altitude)
-    band = int(stretched * ALTITUDE_BANDS)
-    return min(ALTITUDE_BANDS - 1, band)
 
 
 def _band_factor(band):
@@ -129,7 +101,9 @@ def apply_relief_tint(hex_color, band):
     """Au palier le plus haut, tire la couleur vers un gris rocheux (sommet) ;
     au plus bas, vers un bleu-gris sombre (creux). Rend le relief extrême
     reconnaissable indépendamment du biome, et prépare un futur biome
-    montagne dédié."""
+    montagne dédié. Doit rester désactivable avec le reste du module :
+    sans ce garde-fou, décocher "Altitude" laissait quand même apparaître
+    cette teinte sur les cases extrêmes."""
     if not config.ENABLE_ALTITUDE:
         return hex_color
     if band == ALTITUDE_BANDS - 1:
@@ -166,6 +140,8 @@ def blend_color(hex_color, night_alpha, weather_alpha=0.0, weather_color=(0, 0, 
 
 
 def get_night_alpha(world):
+    if not config.ENABLE_DAY_NIGHT:
+        return 0.0
     t           = world.time_of_day()
     night_start = 1 - NIGHT_RATIO
     if t < 0.1:

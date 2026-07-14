@@ -234,7 +234,6 @@ def run_config_gui():
     add_module(t, 9, "💀 Mort de vieillesse",                 "ENABLE_AGE_DEATH")
     add_module(t, 10, "💬 Communication (lettres)",           "ENABLE_COMMUNICATION")
     add_module(t, 11, "⛰ Altitude (ombrage du relief)",       "ENABLE_ALTITUDE")
-    add_module(t, 12, "🧊 Relief 2.5D (affichage en blocs)",  "ENABLE_ALTITUDE_2_5D", "Altitude")
 
 
     section(t, 13, "Logs")
@@ -266,7 +265,9 @@ def run_config_gui():
 
     def on_altitude_toggle(*_):
         if not module_vars["ENABLE_ALTITUDE"].get():
-            module_vars["ENABLE_ALTITUDE_2_5D"].set(False)
+            # Le relief 2.5D (réglable en jeu, plus dans cet écran) dépend
+            # de l'altitude : on le désactive aussi si l'altitude l'est.
+            config.ENABLE_ALTITUDE_2_5D = False
 
     module_vars["ENABLE_BIOMES"].trace_add("write", on_biomes_toggle)
     module_vars["ENABLE_SEASONS"].trace_add("write", on_seasons_toggle)

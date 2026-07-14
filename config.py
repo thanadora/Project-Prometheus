@@ -79,6 +79,8 @@ BIOME_WATER   = 0
 BIOME_DESERT  = 1
 BIOME_PRAIRIE = 2
 BIOME_FOREST  = 3
+BIOME_MOUNTAIN_ROCK = 4
+BIOME_MOUNTAIN_SNOW = 5
 
 WATER_THRESHOLD   = 0.38
 FOREST_THRESHOLD  = 0.45
@@ -95,7 +97,20 @@ PRAIRIE_THRESHOLD = 0.60
 # son altitude pour donner un effet de relief façon blocs/2.5D. Purement
 # visuel pour l'instant — n'affecte ni le déplacement ni la visibilité.
 ENABLE_ALTITUDE      = True
-ENABLE_ALTITUDE_2_5D = False
+ENABLE_ALTITUDE_2_5D = True
+
+# Bruit d'altitude totalement séparé de celui des biomes (voir map.py). Une
+# échelle plus grande donne des massifs montagneux larges et cohérents
+# plutôt que des variations calées sur chaque frontière de biome.
+ALTITUDE_NOISE_SCALE = 16.0
+
+# Seuils (sur l'altitude BRUTE 0..1, indépendants des paliers d'ombrage
+# ci-dessous) à partir desquels le relief devient assez élevé pour que la
+# case devienne de la montagne — rocheuse, puis enneigée au-delà d'un
+# second seuil — à la place du biome climatique (désert/prairie/forêt).
+# L'eau reste toujours prioritaire : un lac reste un lac même en altitude.
+MOUNTAIN_ROCK_THRESHOLD = 0.58   # ≈ 15 % du terrain le plus élevé
+MOUNTAIN_SNOW_THRESHOLD = 0.63   # ≈ 4 % du terrain le plus élevé
 
 # Le bruit de Perlin (3 octaves) reste naturellement proche de 0.5 — sans
 # étirement, les écarts d'altitude sont trop subtils pour se voir. On étire
@@ -108,11 +123,10 @@ ALTITUDE_CONTOUR_COLOR  = "#333333"  # couleur des lignes de niveau entre palier
 
 # Teinte supplémentaire pour le palier le plus haut / le plus bas : au-delà
 # du simple éclaircissement, on tire la couleur vers un gris rocheux (sommet)
-# ou un bleu-gris sombre (creux), pour que le relief le plus extrême se
-# reconnaisse d'un coup d'œil et ne dépende pas de la couleur du biome en
-# dessous. Prépare aussi le terrain pour un futur biome "montagne" dédié.
+# ou un bleu-gris sombre (creux). S'applique en plus de la couleur du biome
+# montagne lui-même, pour une variation douce à l'intérieur des massifs.
 ALTITUDE_PEAK_COLOR    = "#d9d3c1"
-ALTITUDE_PEAK_BLEND    = 0.40
+ALTITUDE_PEAK_BLEND    = 0.25
 ALTITUDE_VALLEY_COLOR  = "#1a2230"
 ALTITUDE_VALLEY_BLEND  = 0.20
 
@@ -121,11 +135,15 @@ BIOME_COLORS = {
     BIOME_DESERT:  "#c2a35a",
     BIOME_PRAIRIE: "#4a7c3f",
     BIOME_FOREST:  "#1e4d2b",
+    BIOME_MOUNTAIN_ROCK: "#8a8072",
+    BIOME_MOUNTAIN_SNOW: "#eef1f5",
 }
 
 # -----------------------------
 # NOURRITURE PAR BIOME
 # -----------------------------
+# Pas d'entrée pour BIOME_MOUNTAIN_ROCK / BIOME_MOUNTAIN_SNOW : zone hostile,
+# aucune nourriture n'y pousse (food.py ignore tout biome absent d'ici).
 FOOD_TYPES = {
     BIOME_DESERT:  dict(gain=10, respawn=0.004, capacity=3, color="#e8c84a"),
     BIOME_PRAIRIE: dict(gain=22, respawn=0.010, capacity=5, color="#90ee90"),

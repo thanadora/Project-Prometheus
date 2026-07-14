@@ -142,6 +142,7 @@ class SimulationGUI:
         menubar.add_cascade(label="Enregistrement", menu=rec_menu)
 
         view_menu = tk.Menu(menubar, tearoff=0)
+        self.view_menu = view_menu
         view_menu.add_checkbutton(label="🐞 Panneau Debug / Graphes", variable=self.debug_visible_var,
                                    command=self.toggle_debug_panel, accelerator=self._pretty_key(kb["toggle_debug"]))
         view_menu.add_separator()
@@ -152,10 +153,11 @@ class SimulationGUI:
         menubar.add_cascade(label="Affichage", menu=view_menu)
 
         self.root.config(menu=menubar)
+        self._sync_altitude_2_5d_menu_state()
 
     def _build_canvas(self):
         self.canvas_px_w = self.view_w * CELL_SIZE + MARGIN
-        self.canvas_px_h = self.view_h * CELL_SIZE + MARGIN + TOP_MARGIN
+        self.canvas_px_h = self.view_h * CELL_SIZE + MARGIN + top_margin()
         self.canvas_sim = tk.Canvas(self.top_frame, width=self.canvas_px_w, height=self.canvas_px_h, bg=BACKGROUND_COLOR)
         self.canvas_sim.pack()
         self.canvas_sim.bind(f"<Button-{config.MOUSE_SELECT_BUTTON}>", self.on_canvas_click)
@@ -172,6 +174,15 @@ class SimulationGUI:
 
         self.agent_label = tk.Label(self.top_frame, text="", font=("Courier", 10), justify=tk.LEFT, anchor="w")
         self.agent_label.pack(fill=tk.X, padx=10)
+
+    def _resize_canvas(self):
+        """Réajuste la hauteur du canvas à la marge réellement active. Sans
+        ça, la marge réservée au relief 2.5D restait allouée (bande noire
+        visible en haut/bas) même une fois le relief désactivé."""
+        self.canvas_px_h = self.view_h * self.cell_size + MARGIN + top_margin()
+        self.canvas_sim.config(height=self.canvas_px_h)
+
+
 
     def _build_toolbar(self):
         """Barre d'outils fine : uniquement les actions temps réel, tout le reste est
@@ -239,20 +250,32 @@ class SimulationGUI:
                 best_dist, best = d, agent
         self.selected_agent = best if best_dist <= 3 else None
 
+    def _sync_altitude_2_5d_menu_state(self):
+        """Grise l'entrée "Relief 2.5D" quand l'altitude est désactivée —
+        pas la peine de laisser cliquable un réglage qui n'aurait plus
+        aucun effet."""
+        state = "normal" if config.ENABLE_ALTITUDE else "disabled"
+        self.view_menu.entryconfig("🧊 Relief 2.5D", state=state)
+
     def toggle_altitude(self):
         config.ENABLE_ALTITUDE = self.altitude_var.get()
         if not config.ENABLE_ALTITUDE:
             # Le relief 2.5D dépend de l'ombrage : pas de sens de l'un sans l'autre.
             config.ENABLE_ALTITUDE_2_5D = False
             self.altitude_2_5d_var.set(False)
+        self._sync_altitude_2_5d_menu_state()
+        self._resize_canvas()
         self._draw_world()
 
     def toggle_altitude_2_5d(self):
-        if self.altitude_2_5d_var.get() and not config.ENABLE_ALTITUDE:
-            # Impossible d'activer le 2.5D sans l'altitude : on réactive les deux.
-            config.ENABLE_ALTITUDE = True
-            self.altitude_var.set(True)
+        if not config.ENABLE_ALTITUDE:
+            # L'altitude est désactivée : le relief 2.5D reste inopérant,
+            # on ne le réactive plus depuis ici (il n'y a alors plus aucune
+            # donnée d'altitude à afficher, quel que soit ce réglage).
+            self.altitude_2_5d_var.set(False)
+            return
         config.ENABLE_ALTITUDE_2_5D = self.altitude_2_5d_var.get()
+        self._resize_canvas()
         self._draw_world()
 
     # =====================================================
