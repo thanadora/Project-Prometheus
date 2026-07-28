@@ -13,6 +13,10 @@ from config import (
     WATER_THRESHOLD,
     PRAIRIE_THRESHOLD,
     FOREST_THRESHOLD,
+    FERTILITY_NOISE_SCALE,
+    FERTILITY_CONTRAST,
+    HUMIDITY_NOISE_SCALE,
+    HUMIDITY_CONTRAST,
     ALTITUDE_NOISE_SCALE,
     ALTITUDE_CONTRAST,
     ALTITUDE_BANDS,
@@ -32,16 +36,66 @@ def _fertility_to_biome(fertility):
         return BIOME_DESERT
 
 
+def _humidity_biome(fertility, humidity):
+    """Classe une case de terre (fertility >= WATER_THRESHOLD) en forêt,
+    prairie ou désert, en DÉCALANT la fertilité selon le second champ de
+    bruit d'humidité (totalement décorrélé, voir HUMIDITY_INFLUENCE dans
+    config.py). L'eau, elle, reste décidée uniquement par la fertilité :
+    un lac est un lac parce que c'est un creux du terrain, pas une question
+    d'humidité locale.
+
+    Décalage ADDITIF plutôt que moyenne pondérée : mélanger deux variables
+    indépendantes (fertility, humidity) réduit leur variance combinée et
+    comprime le résultat vers le centre — en pratique désert et eau
+    finissent presque entièrement remplacés par de la prairie. Un simple
+    décalage +/- préserve au contraire l'étalement de la fertilité.
+
+    Avec HUMIDITY_INFLUENCE=0, dryness == fertility : comportement
+    identique à _fertility_to_biome() (forêt en anneau autour de l'eau).
+    Plus HUMIDITY_INFLUENCE augmente, plus forêt/prairie/désert se
+    redistribuent librement sur la carte, indépendamment du relief.
+
+    Lu dynamiquement via `config.HUMIDITY_INFLUENCE` (et non importé par
+    valeur) pour rester réglable en direct depuis l'écran de config, comme
+    ENABLE_ALTITUDE -- un import figé rendrait le curseur inopérant, comme
+    le bug déjà connu documenté pour TOROIDAL_WORLD (voir
+    test_config_propagation.py)."""
+    if fertility < WATER_THRESHOLD:
+        return BIOME_WATER
+    influence = config.HUMIDITY_INFLUENCE
+    dryness = fertility + (0.5 - humidity) * influence
+    dryness = max(0.0, min(1.0, dryness))
+    if dryness < FOREST_THRESHOLD:
+        return BIOME_FOREST
+    elif dryness < PRAIRIE_THRESHOLD:
+        return BIOME_PRAIRIE
+    else:
+        return BIOME_DESERT
+
+
+def _stretch(value, contrast):
+    """Étire l'écart à la moyenne (0.5) d'une valeur de bruit 0..1 selon
+    `contrast` — sans ça, une somme d'octaves de Perlin reste naturellement
+    concentrée près de 0.5 (typiquement [0.24, 0.75] avec les réglages de ce
+    projet) et des seuils qui semblent raisonnables sur le papier ne captent
+    en pratique qu'un mince bout de queue de la courbe. Utilisé pour
+    l'affichage de l'altitude (voir stretch_altitude) ET pour la génération
+    de la fertilité/humidité elles-mêmes (voir _compute_fertility /
+    _compute_humidity) — sans quoi eau et désert restent quasi invisibles
+    quels que soient WATER_THRESHOLD/PRAIRIE_THRESHOLD."""
+    dev = value - 0.5
+    span = math.tanh(0.5 * contrast)
+    stretched_dev = math.tanh(dev * contrast) / span * 0.5
+    return 0.5 + stretched_dev
+
+
 def stretch_altitude(altitude):
     """Étire l'écart à la moyenne (0.5) pour compenser le fait que le bruit
     de Perlin reste naturellement proche de 0.5 — sans ça, les différences
     de relief sont quasi invisibles à l'écran. Utilisé uniquement pour
     l'affichage (ombrage/paliers) — la décision "montagne ou pas" se base
     sur l'altitude brute, voir MOUNTAIN_ROCK_THRESHOLD/MOUNTAIN_SNOW_THRESHOLD."""
-    dev  = altitude - 0.5
-    span = math.tanh(0.5 * ALTITUDE_CONTRAST)
-    stretched_dev = math.tanh(dev * ALTITUDE_CONTRAST) / span * 0.5
-    return 0.5 + stretched_dev
+    return _stretch(altitude, ALTITUDE_CONTRAST)
 
 
 def altitude_band(altitude):
@@ -63,7 +117,7 @@ class GameMap:
     # compte, seule la valeur de biome_map (déjà tranchée) compte.
     altitude_map: dict = field(default_factory=dict)
     infinite: bool = False
-    _scale: float = 10.0
+    _scale: float = FERTILITY_NOISE_SCALE
     _offset_x: float = 0.0
     _offset_y: float = 0.0
     # Bruit d'altitude : complètement séparé de celui des biomes (voir
@@ -73,6 +127,15 @@ class GameMap:
     # mêmes valeurs hautes), d'où des "déserts en montagne".
     _alt_offset_x: float = 0.0
     _alt_offset_y: float = 0.0
+    # Bruit d'humidité : même principe de découplage, décalage différent de
+    # celui de l'altitude pour ne pas corréler les deux (voir _compute_humidity).
+    _hum_offset_x: float = 0.0
+    _hum_offset_y: float = 0.0
+    # Mémoire des cases inondées (storm) : (biome, altitude) qu'elles avaient
+    # juste avant d'être recouvertes d'eau, pour les restaurer telles quelles
+    # quand l'eau se retire (drought) au lieu de tout aplatir en prairie —
+    # voir flood()/unflood() dans weather.py.
+    flood_memory: dict = field(default_factory=dict)
 
     def initialize(self, offset_x=None, offset_y=None):
         """Prépare le générateur de bruit.
@@ -82,7 +145,7 @@ class GameMap:
                           calculées à la demande via `get_biome()`, pour ne
                           jamais avoir à générer une grille de taille infinie.
         """
-        self._scale    = 10.0
+        self._scale    = FERTILITY_NOISE_SCALE
         self._offset_x = offset_x if offset_x is not None else random.uniform(0, 1000)
         self._offset_y = offset_y if offset_y is not None else random.uniform(0, 1000)
         # Décalage fixe (et grand) par rapport au bruit de fertilité : le champ
@@ -90,6 +153,10 @@ class GameMap:
         # un relief décorrélé des biomes sans avoir à sauvegarder d'offset en plus.
         self._alt_offset_x = self._offset_x + 5000.0
         self._alt_offset_y = self._offset_y + 5000.0
+        # Décalage différent de celui de l'altitude (5000) : deux champs
+        # décorrélés entre eux, chacun décorrélé de la fertilité.
+        self._hum_offset_x = self._offset_x + 10000.0
+        self._hum_offset_y = self._offset_y + 10000.0
 
         if self.infinite:
             return
@@ -105,7 +172,8 @@ class GameMap:
         même règle de superposition montagne."""
         pos = (x, y)
         fertility = self._compute_fertility(x, y)
-        base_biome = _fertility_to_biome(fertility)
+        humidity = self._compute_humidity(x, y)
+        base_biome = _humidity_biome(fertility, humidity)
         if config.ENABLE_ALTITUDE:
             altitude = self._compute_altitude(x, y)
             self.altitude_map[pos] = altitude
@@ -123,7 +191,7 @@ class GameMap:
             persistence=0.5,
             lacunarity=2.0,
         )
-        return (n + 1) / 2
+        return _stretch((n + 1) / 2, FERTILITY_CONTRAST)
 
     def _compute_altitude(self, x, y):
         n = noise.pnoise2(
@@ -134,6 +202,16 @@ class GameMap:
             lacunarity=2.0,
         )
         return (n + 1) / 2
+
+    def _compute_humidity(self, x, y):
+        n = noise.pnoise2(
+            (x + self._hum_offset_x) / HUMIDITY_NOISE_SCALE,
+            (y + self._hum_offset_y) / HUMIDITY_NOISE_SCALE,
+            octaves=3,
+            persistence=0.5,
+            lacunarity=2.0,
+        )
+        return _stretch((n + 1) / 2, HUMIDITY_CONTRAST)
 
     @staticmethod
     def _apply_mountain(base_biome, altitude):
@@ -192,5 +270,42 @@ class GameMap:
             # plus son relief naturel, on retombe sur une valeur neutre plutôt
             # que de garder une altitude périmée.
             self.altitude_map[pos] = 0.5
+        if world is not None:
+            world._land_cache_valid = False
+
+    def flood(self, positions, world=None):
+        """Convertit `positions` en eau (crue), en mémorisant dans
+        flood_memory le relief qu'elles avaient juste avant — pour pouvoir
+        le restaurer plus tard via unflood() au lieu de perdre définitivement
+        montagnes/forêts/désert sous chaque inondation temporaire.
+
+        Ne touche jamais une case déjà en mémoire : si l'eau grossit encore
+        sur une case déjà inondée (crue qui continue), on garde le tout
+        premier relief connu plutôt que de l'écraser par de l'eau."""
+        for pos in positions:
+            if pos not in self.flood_memory:
+                prior_altitude = self.altitude_map.get(pos) if config.ENABLE_ALTITUDE else None
+                self.flood_memory[pos] = (self.biome_map.get(pos), prior_altitude)
+            self.biome_map[pos] = BIOME_WATER
+            if config.ENABLE_ALTITUDE:
+                self.altitude_map[pos] = 0.5
+        if world is not None:
+            world._land_cache_valid = False
+
+    def unflood(self, positions, world=None):
+        """Fait reculer l'eau sur `positions` (décrue) : restaure le relief
+        mémorisé par flood() si la case avait bien été inondée, sinon
+        retombe sur de la prairie neutre — cas d'un vrai lac d'origine
+        (jamais inondé) qui s'assèche en bordure lors d'une sécheresse."""
+        for pos in positions:
+            if pos in self.flood_memory:
+                biome, altitude = self.flood_memory.pop(pos)
+                self.biome_map[pos] = biome
+                if config.ENABLE_ALTITUDE:
+                    self.altitude_map[pos] = altitude if altitude is not None else 0.5
+            else:
+                self.biome_map[pos] = BIOME_PRAIRIE
+                if config.ENABLE_ALTITUDE:
+                    self.altitude_map[pos] = 0.5
         if world is not None:
             world._land_cache_valid = False

@@ -121,6 +121,7 @@ def run_config_gui():
     add_float(t, 9,  "Seuil eau",           "WATER_THRESHOLD",     0.1, 0.8)
     add_float(t, 10, "Seuil forêt",         "FOREST_THRESHOLD",    0.1, 0.8)
     add_float(t, 11, "Seuil prairie",       "PRAIRIE_THRESHOLD",   0.1, 0.9)
+    add_float(t, 12, "Influence humidité",  "HUMIDITY_INFLUENCE",  0.0, 1.0)
 
     # ── Onglet 2 : Énergie ───────────────────────────────────────
     t = make_tab(nb, "⚡ Énergie")

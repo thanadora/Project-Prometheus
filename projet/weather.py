@@ -7,7 +7,8 @@ from logger import get_logger
 from config import (
     DAY_DURATION,
     BIOME_WATER,
-    BIOME_PRAIRIE,
+    BIOME_MOUNTAIN_ROCK,
+    BIOME_MOUNTAIN_SNOW,
     WEATHER_CLEAR,
     WEATHER_RAIN,
     WEATHER_STORM,
@@ -58,7 +59,7 @@ def _shrink_water(world):
             if _in_bounds(world, x + dx, y + dy)
         )
     }
-    world.map.update_biomes(to_land, BIOME_PRAIRIE, world)
+    world.map.unflood(to_land, world)
     for pos in to_land:
         world.food.clear_position(pos)
 
@@ -71,9 +72,10 @@ def _expand_water(world):
         if biome == BIOME_WATER
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
         if _in_bounds(world, x + dx, y + dy)
-        and world.map.biome_map.get((x + dx, y + dy)) != BIOME_WATER
+        and world.map.biome_map.get((x + dx, y + dy)) not in
+        (BIOME_WATER, BIOME_MOUNTAIN_ROCK, BIOME_MOUNTAIN_SNOW)
     }
-    world.map.update_biomes(new_water, BIOME_WATER, world)
+    world.map.flood(new_water, world)
     for pos in new_water:
         world.food.clear_position(pos)
     for agent in world.agents:

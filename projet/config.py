@@ -86,6 +86,39 @@ WATER_THRESHOLD   = 0.38
 FOREST_THRESHOLD  = 0.45
 PRAIRIE_THRESHOLD = 0.60
 
+# Le bruit de Perlin (3 octaves) reste naturellement concentré près de 0.5
+# (même constat que pour l'altitude, voir ALTITUDE_CONTRAST plus bas) : en
+# pratique il ne dépasse presque jamais [0.24, 0.75]. Sans étirement, les
+# seuils ci-dessus ne captent qu'un mince bout de queue de la courbe pour
+# l'eau et le désert, qui deviennent quasi invisibles (petites taches
+# éparses) malgré des seuils qui semblent raisonnables sur le papier.
+# FERTILITY_NOISE_SCALE plus grand = lacs plus larges et plus cohérents
+# (moins de "confettis" d'eau qu'à l'échelle 10 d'origine).
+FERTILITY_NOISE_SCALE = 20.0
+FERTILITY_CONTRAST    = 2.5   # facteur d'étirement de l'écart à 0.5
+
+# -----------------------------
+# HUMIDITÉ (répartition forêt / prairie / désert)
+# -----------------------------
+# Bruit totalement séparé de celui de la fertilité (même principe de
+# décorrélation que pour l'altitude, voir map.py : offset fixe et grand).
+# Sans lui, forêt/prairie/désert suivraient un seul champ de bruit et la
+# forêt ne pourrait exister qu'en un anneau étroit collé à chaque étendue
+# d'eau (même contour que WATER_THRESHOLD) — jamais de forêt profonde loin
+# d'un lac, ni de désert en bordure d'eau (pourtant réaliste : Nil, vallée
+# du Colorado...).
+HUMIDITY_NOISE_SCALE = 18.0
+HUMIDITY_CONTRAST    = 2.5   # même raison que FERTILITY_CONTRAST ci-dessus
+
+# Décalage ADDITIF (pas une moyenne pondérée) appliqué à la fertilité selon
+# l'humidité locale : humide (humidity haut) pousse vers la forêt, sec
+# pousse vers le désert. Un mélange (moyenne fertility/humidity) comprimerait
+# la distribution vers le centre — la variance d'une moyenne de deux
+# variables indépendantes est plus faible que celle de chacune seule — et
+# ferait quasiment disparaître désert et eau au profit de la prairie.
+# 0 = pas d'effet, 1 = décalage maximal (~±0.5 aux extrêmes d'humidité).
+HUMIDITY_INFLUENCE = 0.4
+
 # -----------------------------
 # ALTITUDE
 # -----------------------------
