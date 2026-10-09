@@ -162,14 +162,12 @@ class TestCheckMigrationSuccess:
         assert len(dead) == 1
         assert (alive[0].x, alive[0].y) == (0, 0)
 
-    def test_known_quirk_stranded_agent_not_relocated_nor_killed(self, monkeypatch):
-        """Documente un comportement existant potentiellement dangereux :
-        un agent dont l'îlot est trop petit (< 10% de la terre totale) n'est
-        ni relocalisé ni tué — il garde ses anciennes coordonnées (x, y),
-        qui peuvent très bien être de l'eau sur la NOUVELLE carte, puisque
-        toute la carte est remplacée pour tout le monde. Ce test fige ce
-        comportement ; le corriger (le tuer, ou le relocaliser comme les
-        autres) serait une amélioration légitime mais volontaire."""
+    def test_stranded_agent_is_relocated_or_killed_never_left_on_water(self, monkeypatch):
+        """Un agent dont l'îlot est trop petit n'est plus laissé tel quel :
+        puisque toute la carte est remplacée, TOUS les agents sont relocalisés
+        sur une case praticable de la nouvelle carte (ou tués s'il n'y a plus
+        de place). Avant la correction, il gardait ses anciennes coordonnées,
+        qui pouvaient être sous l'eau de la nouvelle carte."""
         width, height = 20, 20
         land_positions = {(x, y) for x in range(20) for y in range(15)}
         island = {(19, 19), (18, 19)}
@@ -183,13 +181,22 @@ class TestCheckMigrationSuccess:
         mobile = make_agent(id=2, x=0, y=0, vote_migrate=True)
         world.agents = [stranded, mobile]
 
-        # Nouvelle carte 100% eau sauf l'ancienne position de `mobile` :
-        # sans intervention, la case (19,19) de `stranded` sera de l'eau.
+        # Nouvelle carte 100% eau sauf une unique case praticable en (0,0).
         patch_new_map_layout(monkeypatch, {(0, 0): config.BIOME_PRAIRIE},
                               default_biome=config.BIOME_WATER)
         migrated = check_migration(world)
 
         assert migrated is True
-        assert stranded.alive is True  # ni tué...
-        assert (stranded.x, stranded.y) == (19, 19)  # ...ni déplacé
-        assert world.map.is_walkable(19, 19) is False  # et pourtant, sous l'eau
+        # Il n'y avait qu'une seule case : un seul agent survit, et il est
+        # forcément sur la terre (jamais laissé sous l'eau).
+        alive = [a for a in (stranded, mobile) if a.alive]
+        assert len(alive) == 1
+        assert world.map.is_walkable(alive[0].x, alive[0].y)
+        assert all(world.map.is_walkable(a.x, a.y) for a in world.agents if a.alive)
+
+    def test_all_mobile_agents_land_on_walkable_new_map(self, monkeypatch):
+        patch_new_map_layout(monkeypatch, {}, default_biome=config.BIOME_PRAIRIE)
+        world = make_world(width=6, height=6, tick=10_000)
+        world.agents = [make_agent(id=i, x=i, y=0, vote_migrate=True) for i in range(6)]
+        check_migration(world)
+        assert all(world.map.is_walkable(a.x, a.y) for a in world.agents if a.alive)

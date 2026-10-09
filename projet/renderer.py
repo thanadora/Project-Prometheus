@@ -7,33 +7,7 @@ les événements et la boucle de simulation.
 
 import colorsys
 import config
-from config import (
-    CELL_SIZE,
-    WORLD_WIDTH,
-    WORLD_HEIGHT,
-    BIOME_COLORS,
-    FOOD_TYPES,
-    NIGHT_RATIO,
-    WEATHER_RAIN,
-    WEATHER_STORM,
-    WEATHER_DROUGHT,
-    WEATHER_FROST,
-    GRID_COLOR,
-    VISION_RADIUS,
-    NIGHT_VISION_RATIO,
-    WEATHER_VISION,
-    INVENTORY_SIZE,
-    ENABLE_COMMUNICATION,
-    ALTITUDE_SHADE_STRENGTH,
-    ALTITUDE_MAX_OFFSET,
-    ALTITUDE_BANDS,
-    ALTITUDE_CONTOUR_COLOR,
-    ALTITUDE_PEAK_COLOR,
-    ALTITUDE_PEAK_BLEND,
-    ALTITUDE_VALLEY_COLOR,
-    ALTITUDE_VALLEY_BLEND,
-)
-from actions import action_label
+from actions import action_label, ACTION_SLEEP
 from policy_registry import REGISTRY, policy_name
 from map import stretch_altitude, altitude_band
 
@@ -42,28 +16,22 @@ from map import stretch_altitude, altitude_band
 # OVERLAYS JOUR/NUIT ET MÉTÉO
 # =========================================================
 
-# Marge réservée en haut du canvas pour laisser de la place aux cases
-# surélevées en mode 2.5D. Dimensionnée pour le zoom max (voir gui.py,
-# zoom_max = 2.5). Nulle quand le 2.5D est désactivé, pour que l'affichage
-# reste identique au pixel près à l'ancien rendu plat.
-TOP_MARGIN = int(ALTITUDE_MAX_OFFSET * 3)
-
-
 def top_margin():
-    """Marge courante à appliquer en haut du canvas — 0 si le relief 2.5D
-    n'est pas actif, pour ne rien changer à l'affichage plat d'origine."""
+    """Marge courante à appliquer en haut du canvas pour laisser de la place
+    aux cases surélevées en mode 2.5D — 0 si le relief 2.5D n'est pas actif,
+    pour ne rien changer à l'affichage plat d'origine."""
     if config.ENABLE_ALTITUDE and config.ENABLE_ALTITUDE_2_5D:
-        return TOP_MARGIN
+        return int(config.ALTITUDE_MAX_OFFSET * 3)
     return 0
 
 
 def _band_factor(band):
     """Facteur de luminosité associé à un palier, régulièrement espacé
     autour de 1.0 sur toute l'amplitude ALTITUDE_SHADE_STRENGTH."""
-    if ALTITUDE_BANDS <= 1:
+    if config.ALTITUDE_BANDS <= 1:
         return 1.0
-    t = band / (ALTITUDE_BANDS - 1)  # 0..1
-    return 1.0 + (t - 0.5) * 2 * ALTITUDE_SHADE_STRENGTH
+    t = band / (config.ALTITUDE_BANDS - 1)  # 0..1
+    return 1.0 + (t - 0.5) * 2 * config.ALTITUDE_SHADE_STRENGTH
 
 
 def shade_by_altitude(hex_color, altitude):
@@ -106,10 +74,10 @@ def apply_relief_tint(hex_color, band):
     cette teinte sur les cases extrêmes."""
     if not config.ENABLE_ALTITUDE:
         return hex_color
-    if band == ALTITUDE_BANDS - 1:
-        return _blend_hex(hex_color, ALTITUDE_PEAK_COLOR, ALTITUDE_PEAK_BLEND)
+    if band == config.ALTITUDE_BANDS - 1:
+        return _blend_hex(hex_color, config.ALTITUDE_PEAK_COLOR, config.ALTITUDE_PEAK_BLEND)
     if band == 0:
-        return _blend_hex(hex_color, ALTITUDE_VALLEY_COLOR, ALTITUDE_VALLEY_BLEND)
+        return _blend_hex(hex_color, config.ALTITUDE_VALLEY_COLOR, config.ALTITUDE_VALLEY_BLEND)
     return hex_color
 
 
@@ -121,8 +89,8 @@ def get_y_offset(world, x, y, cs):
         return 0
     altitude = world.map.get_altitude(x, y)
     band     = altitude_band(altitude)
-    t        = band / (ALTITUDE_BANDS - 1) if ALTITUDE_BANDS > 1 else 1.0
-    return t * ALTITUDE_MAX_OFFSET * (cs / CELL_SIZE)
+    t        = band / (config.ALTITUDE_BANDS - 1) if config.ALTITUDE_BANDS > 1 else 1.0
+    return t * config.ALTITUDE_MAX_OFFSET * (cs / config.CELL_SIZE)
 
 
 def blend_color(hex_color, night_alpha, weather_alpha=0.0, weather_color=(0, 0, 0)):
@@ -143,7 +111,7 @@ def get_night_alpha(world):
     if not config.ENABLE_DAY_NIGHT:
         return 0.0
     t           = world.time_of_day()
-    night_start = 1 - NIGHT_RATIO
+    night_start = 1 - config.NIGHT_RATIO
     if t < 0.1:
         return 1.0 - (t / 0.1)
     if t < night_start:
@@ -155,10 +123,10 @@ def get_night_alpha(world):
 
 def get_weather_overlay(world):
     overlays = {
-        WEATHER_RAIN:    (0.25, (30,  50, 120)),
-        WEATHER_STORM:   (0.45, (20,  20,  60)),
-        WEATHER_DROUGHT: (0.20, (120, 80,  20)),
-        WEATHER_FROST:   (0.30, (180, 210, 240)),
+        config.WEATHER_RAIN:    (0.25, (30,  50, 120)),
+        config.WEATHER_STORM:   (0.45, (20,  20,  60)),
+        config.WEATHER_DROUGHT: (0.20, (120, 80,  20)),
+        config.WEATHER_FROST:   (0.30, (180, 210, 240)),
     }
     return overlays.get(world.weather, (0.0, (0, 0, 0)))
 
@@ -172,22 +140,29 @@ def draw_biomes(canvas, world, view_x0=0, view_y0=0, view_w=None, view_h=None, c
     x [view_y0, view_y0+view_h[. Par défaut (mode classique), la fenêtre couvre tout
     le monde comme avant. En mode infini, `get_biome` génère à la demande les cases
     regardées — regarder l'écran "charge" la zone, comme des chunks Minecraft.
-    `cell_size` permet de zoomer/dézoomer (mode infini) sans changer CELL_SIZE global."""
-    view_w = WORLD_WIDTH  if view_w is None else view_w
-    view_h = WORLD_HEIGHT if view_h is None else view_h
-    cs     = CELL_SIZE if cell_size is None else cell_size
+    `cell_size` permet de zoomer/dézoomer (mode infini) sans changer CELL_SIZE global.
+    Les cases en feu sont affichées en orange vif, les inondées en bleu clair."""
+    view_w = config.WORLD_WIDTH  if view_w is None else view_w
+    view_h = config.WORLD_HEIGHT if view_h is None else view_h
+    cs     = config.CELL_SIZE if cell_size is None else cell_size
     night_alpha           = get_night_alpha(world)
     weather_alpha, w_col  = get_weather_overlay(world)
     two_five_d            = config.ENABLE_ALTITUDE and config.ENABLE_ALTITUDE_2_5D
     show_contours          = config.ENABLE_ALTITUDE and not two_five_d
-
-    bands = {}  # (i, j) -> palier d'altitude, réutilisé pour les lignes de niveau
+    burning = getattr(world, "burning", {})
+    flooded = getattr(world, "flooded", {})
+    tm      = top_margin()
+    bands   = {}  # (i, j) -> palier d'altitude, réutilisé pour les lignes de niveau
 
     for j in range(view_h):
         for i in range(view_w):
             x, y     = view_x0 + i, view_y0 + j
             biome    = world.map.get_biome(x, y)
-            base_hex = BIOME_COLORS.get(biome, "#000000")
+            base_hex = config.BIOME_COLORS.get(biome, "#000000")
+            if (x, y) in burning:
+                base_hex = "#ff5a00"   # flammes : couleur lisible de jour comme de nuit
+            elif (x, y) in flooded:
+                base_hex = "#2e6da4"   # crue temporaire : eau plus claire que les lacs
             altitude = world.map.get_altitude(x, y)
             band     = altitude_band(altitude)
             bands[(i, j)] = band
@@ -197,12 +172,11 @@ def draw_biomes(canvas, world, view_x0=0, view_y0=0, view_w=None, view_h=None, c
 
             x1 = i * cs
             x2 = x1 + cs
-            base_y1 = top_margin() + j * cs
+            base_y1 = tm + j * cs
             base_y2 = base_y1 + cs
+            offset   = get_y_offset(world, x, y, cs)
 
             if two_five_d:
-                t          = band / (ALTITUDE_BANDS - 1) if ALTITUDE_BANDS > 1 else 1.0
-                offset     = t * ALTITUDE_MAX_OFFSET * (cs / CELL_SIZE)
                 side_color = blend_color(
                     apply_relief_tint(
                         shade_by_altitude(base_hex, 0.5 - (stretch_altitude(altitude) - 0.5) * 0.6),
@@ -217,8 +191,17 @@ def draw_biomes(canvas, world, view_x0=0, view_y0=0, view_w=None, view_h=None, c
             else:
                 canvas.create_rectangle(x1, base_y1, x2, base_y2, fill=color, outline="")
 
+            if (x, y) in burning and cs >= 8:
+                # Marqueur explicite : la case orange seule se repérait mal,
+                # surtout de nuit ou sous la pluie. Visible jour et nuit.
+                canvas.create_text(
+                    x1 + cs / 2, base_y1 + cs / 2 - offset,
+                    text="🔥", fill="#ffcc33",
+                    font=("Arial", max(6, int(cs * 0.7))),
+                )
+
     if show_contours:
-        top = top_margin()
+        top = tm
         for j in range(view_h):
             for i in range(view_w):
                 b = bands[(i, j)]
@@ -226,12 +209,12 @@ def draw_biomes(canvas, world, view_x0=0, view_y0=0, view_w=None, view_h=None, c
                 if i + 1 < view_w and bands[(i + 1, j)] != b:
                     x = (i + 1) * cs
                     canvas.create_line(x, top + j * cs, x, top + (j + 1) * cs,
-                                        fill=ALTITUDE_CONTOUR_COLOR, width=1)
+                                        fill=config.ALTITUDE_CONTOUR_COLOR, width=1)
                 # Frontière avec la case du dessous
                 if j + 1 < view_h and bands[(i, j + 1)] != b:
                     y = top + (j + 1) * cs
                     canvas.create_line(i * cs, y, (i + 1) * cs, y,
-                                        fill=ALTITUDE_CONTOUR_COLOR, width=1)
+                                        fill=config.ALTITUDE_CONTOUR_COLOR, width=1)
 
 
 def draw_grid(canvas, view_w=None, view_h=None, cell_size=None):
@@ -239,50 +222,65 @@ def draw_grid(canvas, view_w=None, view_h=None, cell_size=None):
     # (les cases sont décalées individuellement) : on ne la dessine pas.
     if config.ENABLE_ALTITUDE and config.ENABLE_ALTITUDE_2_5D:
         return
-    view_w = WORLD_WIDTH  if view_w is None else view_w
-    view_h = WORLD_HEIGHT if view_h is None else view_h
-    cs     = CELL_SIZE if cell_size is None else cell_size
+    view_w = config.WORLD_WIDTH  if view_w is None else view_w
+    view_h = config.WORLD_HEIGHT if view_h is None else view_h
+    cs     = config.CELL_SIZE if cell_size is None else cell_size
     top    = 0
     for x in range(view_w + 1):
-        canvas.create_line(x * cs, top, x * cs, top + view_h * cs, fill=GRID_COLOR)
+        canvas.create_line(x * cs, top, x * cs, top + view_h * cs, fill=config.GRID_COLOR)
     for y in range(view_h + 1):
-        canvas.create_line(0, top + y * cs, view_w * cs, top + y * cs, fill=GRID_COLOR)
+        canvas.create_line(0, top + y * cs, view_w * cs, top + y * cs, fill=config.GRID_COLOR)
 
 
 def draw_foods(canvas, world, view_x0=0, view_y0=0, view_w=None, view_h=None, cell_size=None):
-    view_w = WORLD_WIDTH  if view_w is None else view_w
-    view_h = WORLD_HEIGHT if view_h is None else view_h
-    cs     = CELL_SIZE if cell_size is None else cell_size
+    view_w = config.WORLD_WIDTH  if view_w is None else view_w
+    view_h = config.WORLD_HEIGHT if view_h is None else view_h
+    cs     = config.CELL_SIZE if cell_size is None else cell_size
+    tm     = top_margin()
     for x, y, amount in world.food.iter_food():
         i, j = x - view_x0, y - view_y0
         if not (0 <= i < view_w and 0 <= j < view_h):
             continue
         biome     = world.map.biome_map.get((x, y))
-        food_type = FOOD_TYPES.get(biome)
+        food_type = config.FOOD_TYPES.get(biome)
         if food_type is None:
             continue
-        t      = min(amount / food_type["capacity"], 1.0)
-        size   = 2 + t * (cs - 4)
         offset = get_y_offset(world, x, y, cs)
         cx     = i * cs + cs / 2
-        cy     = top_margin() + j * cs + cs / 2 - offset
+        cy     = tm + j * cs + cs / 2 - offset
+        freshness = world.food.freshness_at((x, y)) if config.ENABLE_FOOD_ROT else 1.0
+        if config.ENABLE_FOOD_ROT and freshness <= config.FOOD_ROTTEN_MARKER:
+            # Pourri : tête de mort bien visible à la place du carré coloré
+            # (le brunissement progressif était trop discret en jeu).
+            canvas.create_text(
+                cx, cy, text="💀", fill="#dddddd",
+                font=("Arial", max(6, int(cs * 0.7))),
+            )
+            continue
+        color  = food_type["color"]
+        if config.ENABLE_FOOD_ROT:
+            # Nourriture fatiguée (pas encore pourrie) : tire vers le brun.
+            color = _blend_hex(color, "#5a4632", 1.0 - freshness)
+        t      = min(amount / food_type["capacity"], 1.0)
+        size   = 2 + t * (cs - 4)
         canvas.create_rectangle(
             cx - size / 2, cy - size / 2,
             cx + size / 2, cy + size / 2,
-            fill=food_type["color"], outline="",
+            fill=color, outline="",
         )
 
 
 def draw_agents(canvas, world, selected_agent, view_x0=0, view_y0=0, view_w=None, view_h=None, cell_size=None):
-    view_w = WORLD_WIDTH  if view_w is None else view_w
-    view_h = WORLD_HEIGHT if view_h is None else view_h
-    cs     = CELL_SIZE if cell_size is None else cell_size
+    view_w = config.WORLD_WIDTH  if view_w is None else view_w
+    view_h = config.WORLD_HEIGHT if view_h is None else view_h
+    cs     = config.CELL_SIZE if cell_size is None else cell_size
+    tm     = top_margin()
     for agent in world.agents:
         i, j = agent.x - view_x0, agent.y - view_y0
         if not (0 <= i < view_w and 0 <= j < view_h):
             continue
         offset = get_y_offset(world, agent.x, agent.y, cs)
-        base_y = top_margin() + j * cs - offset
+        base_y = tm + j * cs - offset
         x1 = i * cs + 2
         y1 = base_y + 2
         x2 = x1 + cs - 4
@@ -318,7 +316,7 @@ def draw_agents(canvas, world, selected_agent, view_x0=0, view_y0=0, view_w=None
                 font=("Arial", max(5, int(cs * 0.4))),
             )
 
-        if ENABLE_COMMUNICATION and agent.spoken_letter and cs >= 8:
+        if config.ENABLE_COMMUNICATION and agent.spoken_letter and cs >= 8:
             canvas.create_text(
                 x2 - 4,
                 y1 + 5,
@@ -326,11 +324,29 @@ def draw_agents(canvas, world, selected_agent, view_x0=0, view_y0=0, view_w=None
                 fill="#ffff00",
                 font=("Arial", max(5, int(cs * 0.45)), "bold"),
             )
+        elif config.ENABLE_FATIGUE and agent.pending_action == ACTION_SLEEP and cs >= 8:
+            # Petit repère visuel : l'agent dort (💤 en haut à droite).
+            canvas.create_text(
+                x2 - 4,
+                y1 + 5,
+                text="💤",
+                fill="#aaddff",
+                font=("Arial", max(5, int(cs * 0.45))),
+            )
+        if config.ENABLE_SICKNESS and agent.sick_ticks > 0 and cs >= 8:
+            # Repère visuel : l'agent est malade (🤢 en bas à droite).
+            canvas.create_text(
+                x2 - 4,
+                y2 - 4,
+                text="🤢",
+                fill="#99ff99",
+                font=("Arial", max(5, int(cs * 0.45))),
+            )
 
         if is_selected:
-            night_ratio   = NIGHT_VISION_RATIO if world.is_night() else 1.0
-            weather_ratio = WEATHER_VISION.get(world.weather, 1.0)
-            radius_px     = VISION_RADIUS * night_ratio * weather_ratio * cs
+            night_ratio   = config.NIGHT_VISION_RATIO if world.is_night() else 1.0
+            weather_ratio = config.WEATHER_VISION.get(world.weather, 1.0)
+            radius_px     = config.VISION_RADIUS * night_ratio * weather_ratio * cs
             cx = i * cs + cs / 2
             cy = base_y + cs / 2
             canvas.create_oval(
@@ -358,7 +374,7 @@ def agent_panel_text(agent, world):
     if agent is None or not agent.alive:
         return ""
 
-    inv_str    = f"{len(agent.inventory)}/{INVENTORY_SIZE} [{_inventory_str(agent)}]"
+    inv_str    = f"{len(agent.inventory)}/{config.INVENTORY_SIZE} [{_inventory_str(agent)}]"
     action_str = action_label(agent.pending_action)
     free_str   = ", ".join(action_label(fa) for fa in agent.free_actions) or "—"
 
@@ -367,12 +383,26 @@ def agent_panel_text(agent, world):
         f"{h['letter']}({h['dx']:+d},{h['dy']:+d})" for h in agent.heard_letters
     ) or "—"
 
+    fatigue_str = f"{agent.fatigue:.1f}" if config.ENABLE_FATIGUE else "OFF"
+    if config.ENABLE_SICKNESS:
+        sick_str = f"{agent.sick_ticks} ticks" if agent.sick_ticks > 0 else "non"
+    else:
+        sick_str = "OFF"
+    if config.ENABLE_FOOD_ROT and agent.inventory:
+        fresh = [it.get("freshness", 1.0) for it in agent.inventory]
+        fresh_str = f"{min(fresh):.2f}"
+    else:
+        fresh_str = "—"
+
     return (
         f"[ Agent #{agent.id} ]  "
         f"Pos: ({agent.x},{agent.y})  "
         f"Énergie: {agent.energy:.1f}  "
         f"Soif: {agent.thirst:.1f}  "
+        f"Fatigue: {fatigue_str}  "
+        f"Malade: {sick_str}  "
         f"Inventaire: {inv_str}  "
+        f"Fraîch.: {fresh_str}  "
         f"Âge: {agent.age}  "
         f"Gén: {agent.generation}  "
         f"IA: {policy_name(agent.policy) or '?'}  "

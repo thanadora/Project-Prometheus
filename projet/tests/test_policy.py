@@ -4,10 +4,10 @@ import config
 from policy import HardcodedPolicy, RandomPolicy
 from actions import (
     ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE,
-    ACTION_DRINK, ACTION_PICKUP, ACTION_EAT, ACTION_VOTE_MIGRATE,
+    ACTION_DRINK, ACTION_PICKUP, ACTION_EAT, ACTION_VOTE_MIGRATE, ACTION_SLEEP,
 )
 
-from tests.conftest import make_agent
+from tests.conftest import make_agent, make_world
 
 
 def perception(**overrides):
@@ -148,7 +148,7 @@ class TestHardcodedTimedActionFoodSeeking:
 class TestRandomPolicy:
     def test_decide_returns_a_valid_movement_or_idle_action(self):
         agent = make_agent()
-        valid = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE}
+        valid = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE, ACTION_SLEEP}
         for _ in range(30):
             _, action = RandomPolicy().decide(agent, None)
             assert action in valid
@@ -174,3 +174,42 @@ class TestRandomPolicy:
         assert RandomPolicy().decide_reproduce(agent, None) is True
         monkeypatch.setattr(random, "random", lambda: 0.5)
         assert RandomPolicy().decide_reproduce(agent, None) is False
+
+
+class TestHardcodedSleepDecision:
+    def test_sleeps_at_night_when_fatigued(self):
+        config.ENABLE_DAY_NIGHT = True
+        night_tick = int(config.DAY_DURATION * (1 - config.NIGHT_RATIO)) + 1
+        world = make_world(width=5, height=5, tick=night_tick)
+        assert world.is_night() is True
+        agent = make_agent(energy=60, thirst=80, fatigue=config.SLEEP_FATIGUE_THRESHOLD)
+        agent.perception = perception()
+        assert HardcodedPolicy()._timed_action(agent, world) == ACTION_SLEEP
+
+    def test_does_not_sleep_at_night_when_not_fatigued(self):
+        config.ENABLE_DAY_NIGHT = True
+        night_tick = int(config.DAY_DURATION * (1 - config.NIGHT_RATIO)) + 1
+        world = make_world(width=5, height=5, tick=night_tick)
+        agent = make_agent(energy=60, thirst=80, fatigue=config.SLEEP_FATIGUE_THRESHOLD - 1)
+        agent.perception = perception()
+        assert HardcodedPolicy()._timed_action(agent, world) != ACTION_SLEEP
+
+    def test_sleeps_in_broad_daylight_when_exhausted(self):
+        world = make_world(width=5, height=5, tick=0)  # plein jour
+        agent = make_agent(energy=60, thirst=80, fatigue=config.MAX_FATIGUE * 0.9)
+        agent.perception = perception()
+        assert HardcodedPolicy()._timed_action(agent, world) == ACTION_SLEEP
+
+    def test_critical_thirst_has_priority_over_sleep(self):
+        world = make_world(width=5, height=5, tick=0)
+        agent = make_agent(energy=60, thirst=config.THIRST_CRITICAL - 1,
+                           fatigue=config.MAX_FATIGUE * 0.9)
+        agent.perception = perception(adjacent_water=True, water_dist=1)
+        assert HardcodedPolicy()._timed_action(agent, world) == ACTION_DRINK
+
+    def test_never_sleeps_when_fatigue_disabled(self):
+        config.ENABLE_FATIGUE = False
+        world = make_world(width=5, height=5, tick=0)
+        agent = make_agent(energy=60, thirst=80, fatigue=config.MAX_FATIGUE)
+        agent.perception = perception()
+        assert HardcodedPolicy()._timed_action(agent, world) != ACTION_SLEEP

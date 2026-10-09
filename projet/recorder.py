@@ -1,7 +1,11 @@
 import os
 import cv2
 import numpy as np
-from config import VIDEO_FPS_SCREEN, VIDEO_FPS_TICK, OUTPUT_DIR
+import config
+
+
+def _hex_to_rgb(hex_color):
+    return (int(hex_color[1:3], 16), int(hex_color[3:5], 16), int(hex_color[5:7], 16))
 
 
 class Recorder:
@@ -26,9 +30,9 @@ class Recorder:
         h, w = self.frames[0].shape[:2]
 
         if self.mode == "screen":
-            fps = VIDEO_FPS_SCREEN * time_scale
+            fps = config.VIDEO_FPS_SCREEN * time_scale
         else:
-            fps = VIDEO_FPS_TICK
+            fps = config.VIDEO_FPS_TICK
 
         fps = max(1.0, fps)
         out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
@@ -47,25 +51,31 @@ class Recorder:
         comme avant. En mode infini, on passe explicitement la fenêtre affichée
         à l'écran — impossible de "tout" capturer sur un monde sans bords."""
         from PIL import Image, ImageDraw
-        from config import CELL_SIZE, BIOME_COLORS, FOOD_TYPES, WORLD_WIDTH, WORLD_HEIGHT
 
-        x0, y0, view_w, view_h = view if view is not None else (0, 0, WORLD_WIDTH, WORLD_HEIGHT)
+        cs = config.CELL_SIZE
+        x0, y0, view_w, view_h = view if view is not None else (0, 0, config.WORLD_WIDTH, config.WORLD_HEIGHT)
 
-        w    = view_w * CELL_SIZE
-        h    = view_h * CELL_SIZE
+        w    = view_w * cs
+        h    = view_h * cs
         img  = Image.new("RGB", (w, h), (0, 0, 0))
         draw = ImageDraw.Draw(img)
+
+        burning = getattr(world, "burning", {})
+        flooded = getattr(world, "flooded", {})
 
         # Biomes (get_biome : génère à la demande si mode infini)
         for j in range(view_h):
             for i in range(view_w):
-                biome = world.map.get_biome(x0 + i, y0 + j)
-                hex_color = BIOME_COLORS.get(biome, "#000000")
-                r = int(hex_color[1:3], 16)
-                g = int(hex_color[3:5], 16)
-                b = int(hex_color[5:7], 16)
+                wx, wy = x0 + i, y0 + j
+                biome = world.map.get_biome(wx, wy)
+                hex_color = config.BIOME_COLORS.get(biome, "#000000")
+                if (wx, wy) in burning:
+                    hex_color = "#ff5a00"
+                elif (wx, wy) in flooded:
+                    hex_color = "#2e6da4"
+                r, g, b = _hex_to_rgb(hex_color)
                 draw.rectangle(
-                    [i * CELL_SIZE, j * CELL_SIZE, (i+1) * CELL_SIZE, (j+1) * CELL_SIZE],
+                    [i * cs, j * cs, (i+1) * cs, (j+1) * cs],
                     fill=(r, g, b)
                 )
 
@@ -75,18 +85,15 @@ class Recorder:
             if not (0 <= i < view_w and 0 <= j < view_h) or amount <= 0:
                 continue
             biome     = world.map.biome_map.get((x, y))
-            food_type = FOOD_TYPES.get(biome)
+            food_type = config.FOOD_TYPES.get(biome)
             if food_type is None:
                 continue
-            hex_color = food_type["color"]
-            r        = int(hex_color[1:3], 16)
-            g        = int(hex_color[3:5], 16)
-            b        = int(hex_color[5:7], 16)
+            r, g, b = _hex_to_rgb(food_type["color"])
             capacity = food_type["capacity"]
             t        = min(amount / capacity, 1.0)
-            size     = 2 + t * (CELL_SIZE - 4)
-            cx       = i * CELL_SIZE + CELL_SIZE / 2
-            cy       = j * CELL_SIZE + CELL_SIZE / 2
+            size     = 2 + t * (cs - 4)
+            cx       = i * cs + cs / 2
+            cy       = j * cs + cs / 2
             draw.rectangle(
                 [cx - size/2, cy - size/2, cx + size/2, cy + size/2],
                 fill=(r, g, b)
@@ -117,10 +124,10 @@ class Recorder:
                 color = AGENT_COLORS["mid"]
             else:
                 color = AGENT_COLORS["low"]
-            x1 = i * CELL_SIZE + 2
-            y1 = j * CELL_SIZE + 2
-            x2 = x1 + CELL_SIZE - 4
-            y2 = y1 + CELL_SIZE - 4
+            x1 = i * cs + 2
+            y1 = j * cs + 2
+            x2 = x1 + cs - 4
+            y2 = y1 + cs - 4
             draw.rectangle([x1, y1, x2, y2], fill=color)
 
         arr = np.array(img)

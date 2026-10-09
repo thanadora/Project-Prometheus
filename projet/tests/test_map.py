@@ -105,6 +105,17 @@ class TestClassicMode:
         m2.initialize(offset_x=42, offset_y=17)
         assert m1.biome_map == m2.biome_map
 
+    def test_out_of_bounds_never_generates_in_classic_mode(self):
+        """Garde-fou : une case hors bornes d'une carte classique n'est jamais
+        générée (elle vaut BIOME_WATER). Sans lui, les feux/crues pouvaient
+        agrandir la carte à l'infini en générant du terrain hors du monde."""
+        m = GameMap(width=4, height=4)
+        m.initialize(offset_x=1, offset_y=1)
+        before = len(m.biome_map)
+        assert m.get_biome(-1, 0) == config.BIOME_WATER
+        assert m.get_biome(4, 4) == config.BIOME_WATER
+        assert len(m.biome_map) == before  # rien n'a été généré
+
 
 class TestInfiniteMode:
     def test_initialize_does_not_prefill(self):

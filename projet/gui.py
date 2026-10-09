@@ -4,27 +4,12 @@ from collections import deque, Counter
 from tkinter import filedialog, messagebox, ttk
 
 import config
-from save import save_world, load_world
+from save import save_world, load_world, SaveFileError
 from recorder import Recorder
 from world import world_phase
-from renderer import draw_biomes, draw_grid, draw_foods, draw_agents, agent_panel_text, TOP_MARGIN, top_margin
+from renderer import draw_biomes, draw_grid, draw_foods, draw_agents, agent_panel_text, top_margin
 from policy_registry import REGISTRY, policy_name
 from logger import get_logger
-from config import (
-    OUTPUT_DIR,
-    CELL_SIZE,
-    MARGIN,
-    SIMULATION_DELAY_MS,
-    BACKGROUND_COLOR,
-    WORLD_WIDTH,
-    WORLD_HEIGHT,
-    INFINITE_VIEW_WIDTH,
-    INFINITE_VIEW_HEIGHT,
-    SEASON_NAMES,
-    WEATHER_NAMES,
-    SAVE_CRITICAL_AGENTS,
-    SAVE_CRITICAL_RECOVERY,
-)
 
 
 # =========================================================
@@ -38,7 +23,7 @@ class SimulationGUI:
 
         self.paused       = False
         self.time_scale   = 1.0
-        self.base_delay   = SIMULATION_DELAY_MS
+        self.base_delay   = config.SIMULATION_DELAY_MS
         self.fast_mode    = False
         self.target_tick  = None
         self.running      = True
@@ -48,8 +33,8 @@ class SimulationGUI:
 
         # ── Caméra (utile uniquement en monde infini — en monde classique
         # elle reste figée à (0,0) et couvre tout le monde comme avant) ──
-        self.view_w = INFINITE_VIEW_WIDTH  if self.world.infinite else WORLD_WIDTH
-        self.view_h = INFINITE_VIEW_HEIGHT if self.world.infinite else WORLD_HEIGHT
+        self.view_w = config.INFINITE_VIEW_WIDTH  if self.world.infinite else self.world.width
+        self.view_h = config.INFINITE_VIEW_HEIGHT if self.world.infinite else self.world.height
         self.camera_x, self.camera_y = 0, 0
         self.zoom = 1.0        # 1.0 = taille normale ; <1 = dézoomé, >1 = zoomé
         self.zoom_min, self.zoom_max = 0.25, 2.5
@@ -156,9 +141,9 @@ class SimulationGUI:
         self._sync_altitude_2_5d_menu_state()
 
     def _build_canvas(self):
-        self.canvas_px_w = self.view_w * CELL_SIZE + MARGIN
-        self.canvas_px_h = self.view_h * CELL_SIZE + MARGIN + top_margin()
-        self.canvas_sim = tk.Canvas(self.top_frame, width=self.canvas_px_w, height=self.canvas_px_h, bg=BACKGROUND_COLOR)
+        self.canvas_px_w = self.view_w * config.CELL_SIZE + config.MARGIN
+        self.canvas_px_h = self.view_h * config.CELL_SIZE + config.MARGIN + top_margin()
+        self.canvas_sim = tk.Canvas(self.top_frame, width=self.canvas_px_w, height=self.canvas_px_h, bg=config.BACKGROUND_COLOR)
         self.canvas_sim.pack()
         self.canvas_sim.bind(f"<Button-{config.MOUSE_SELECT_BUTTON}>", self.on_canvas_click)
 
@@ -179,7 +164,7 @@ class SimulationGUI:
         """Réajuste la hauteur du canvas à la marge réellement active. Sans
         ça, la marge réservée au relief 2.5D restait allouée (bande noire
         visible en haut/bas) même une fois le relief désactivé."""
-        self.canvas_px_h = self.view_h * self.cell_size + MARGIN + top_margin()
+        self.canvas_px_h = self.view_h * self.cell_size + config.MARGIN + top_margin()
         self.canvas_sim.config(height=self.canvas_px_h)
 
 
@@ -284,7 +269,7 @@ class SimulationGUI:
 
     @property
     def cell_size(self):
-        return CELL_SIZE * self.zoom if self.world.infinite else CELL_SIZE
+        return config.CELL_SIZE * self.zoom if self.world.infinite else config.CELL_SIZE
 
     def _recompute_view_dims(self):
         if not self.world.infinite:
@@ -361,22 +346,30 @@ class SimulationGUI:
         path = filedialog.asksaveasfilename(
             defaultextension=".json",
             filetypes=[("JSON", "*.json")],
-            initialfile=f"{OUTPUT_DIR}/save_tick{self.world.tick}.json",
+            initialfile=f"{config.OUTPUT_DIR}/save_tick{self.world.tick}.json",
         )
         if path:
-            os.makedirs(OUTPUT_DIR, exist_ok=True)
-            save_world(self.world, path)
+            os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+            try:
+                save_world(self.world, path)
+            except SaveFileError as e:
+                messagebox.showerror("Sauvegarde impossible", str(e))
 
     def on_load(self):
         path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
         if path:
-            self.world          = load_world(path)
+            try:
+                loaded = load_world(path)
+            except SaveFileError as e:
+                messagebox.showerror("Chargement impossible", str(e))
+                return
+            self.world          = loaded
             self.selected_agent = None
             self.critical_saved = False
             self.debug_panel.graph.history = []
 
-            self.view_w = INFINITE_VIEW_WIDTH  if self.world.infinite else WORLD_WIDTH
-            self.view_h = INFINITE_VIEW_HEIGHT if self.world.infinite else WORLD_HEIGHT
+            self.view_w = config.INFINITE_VIEW_WIDTH  if self.world.infinite else self.world.width
+            self.view_h = config.INFINITE_VIEW_HEIGHT if self.world.infinite else self.world.height
             self.zoom = 1.0
             self.camera_x, self.camera_y = 0, 0
             if self.world.infinite:
@@ -390,7 +383,7 @@ class SimulationGUI:
             path = filedialog.asksaveasfilename(
                 defaultextension=".mp4",
                 filetypes=[("MP4", "*.mp4")],
-                initialfile=f"{OUTPUT_DIR}/simulation_tick{self.world.tick}.mp4",
+                initialfile=f"{config.OUTPUT_DIR}/simulation_tick{self.world.tick}.mp4",
             )
             if path:
                 ok = self.recorder.stop(path, time_scale=self.time_scale)
@@ -456,11 +449,11 @@ class SimulationGUI:
                 world_phase(self.world, self.policy)
 
             n = len(self.world.agents)
-            if n <= SAVE_CRITICAL_AGENTS and not self.critical_saved:
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
-                save_world(self.world, f"{OUTPUT_DIR}/save_critical_tick{self.world.tick}.json")
+            if n <= config.SAVE_CRITICAL_AGENTS and not self.critical_saved:
+                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                save_world(self.world, f"{config.OUTPUT_DIR}/save_critical_tick{self.world.tick}.json")
                 self.critical_saved = True
-            elif n >= SAVE_CRITICAL_RECOVERY and self.critical_saved:
+            elif n >= config.SAVE_CRITICAL_RECOVERY and self.critical_saved:
                 self.critical_saved = False
 
             if self.recorder.recording and self.recorder.mode == "tick":
@@ -500,11 +493,18 @@ class SimulationGUI:
             migration_str = f"  Migrations: {self.world.migration_count}"
 
         camera_str = f"  🌐 Cam: ({self.camera_x},{self.camera_y}) x{self.zoom:.2f}" if self.world.infinite else ""
+        catastrophic_str = ""
+        n_fires   = len(getattr(self.world, "burning", {}))
+        n_floods  = len(getattr(self.world, "flooded", {}))
+        if n_fires:
+            catastrophic_str += f" | 🔥 {n_fires}"
+        if n_floods:
+            catastrophic_str += f" | 🌊 {n_floods}"
         self.info_label.config(text=(
             f"Speed: {self.time_scale:.2f}x | "
             f"Tick: {self.world.tick} | "
-            f"{SEASON_NAMES[self.world.current_season()]} | "
-            f"{WEATHER_NAMES[self.world.weather]} | "
+            f"{config.SEASON_NAMES[self.world.current_season()]} | "
+            f"{config.WEATHER_NAMES[self.world.weather]} | "
             f"Sol: {self.world.soil_moisture:.2f} | "
             f"Heure: {self._time_str()} | "
             f"Agents: {len(self.world.agents)} | "
@@ -512,6 +512,7 @@ class SimulationGUI:
             f"Deaths: {self.world.death_count}"
             f"{migration_str}"
             f"{camera_str}"
+            f"{catastrophic_str}"
         ))
 
         # Graphe population + logs + lettres (fenêtre unique, mise à jour même si cachée)

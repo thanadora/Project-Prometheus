@@ -3,37 +3,17 @@ import random
 import noise
 import config
 from dataclasses import dataclass, field
-from config import (
-    BIOME_WATER,
-    BIOME_DESERT,
-    BIOME_PRAIRIE,
-    BIOME_FOREST,
-    BIOME_MOUNTAIN_ROCK,
-    BIOME_MOUNTAIN_SNOW,
-    WATER_THRESHOLD,
-    PRAIRIE_THRESHOLD,
-    FOREST_THRESHOLD,
-    FERTILITY_NOISE_SCALE,
-    FERTILITY_CONTRAST,
-    HUMIDITY_NOISE_SCALE,
-    HUMIDITY_CONTRAST,
-    ALTITUDE_NOISE_SCALE,
-    ALTITUDE_CONTRAST,
-    ALTITUDE_BANDS,
-    MOUNTAIN_ROCK_THRESHOLD,
-    MOUNTAIN_SNOW_THRESHOLD,
-)
 
 
 def _fertility_to_biome(fertility):
-    if fertility < WATER_THRESHOLD:
-        return BIOME_WATER
-    elif fertility < FOREST_THRESHOLD:
-        return BIOME_FOREST
-    elif fertility < PRAIRIE_THRESHOLD:
-        return BIOME_PRAIRIE
+    if fertility < config.WATER_THRESHOLD:
+        return config.BIOME_WATER
+    elif fertility < config.FOREST_THRESHOLD:
+        return config.BIOME_FOREST
+    elif fertility < config.PRAIRIE_THRESHOLD:
+        return config.BIOME_PRAIRIE
     else:
-        return BIOME_DESERT
+        return config.BIOME_DESERT
 
 
 def _humidity_biome(fertility, humidity):
@@ -60,17 +40,17 @@ def _humidity_biome(fertility, humidity):
     ENABLE_ALTITUDE -- un import figé rendrait le curseur inopérant, comme
     le bug déjà connu documenté pour TOROIDAL_WORLD (voir
     test_config_propagation.py)."""
-    if fertility < WATER_THRESHOLD:
-        return BIOME_WATER
+    if fertility < config.WATER_THRESHOLD:
+        return config.BIOME_WATER
     influence = config.HUMIDITY_INFLUENCE
     dryness = fertility + (0.5 - humidity) * influence
     dryness = max(0.0, min(1.0, dryness))
-    if dryness < FOREST_THRESHOLD:
-        return BIOME_FOREST
-    elif dryness < PRAIRIE_THRESHOLD:
-        return BIOME_PRAIRIE
+    if dryness < config.FOREST_THRESHOLD:
+        return config.BIOME_FOREST
+    elif dryness < config.PRAIRIE_THRESHOLD:
+        return config.BIOME_PRAIRIE
     else:
-        return BIOME_DESERT
+        return config.BIOME_DESERT
 
 
 def _stretch(value, contrast):
@@ -95,15 +75,15 @@ def stretch_altitude(altitude):
     de relief sont quasi invisibles à l'écran. Utilisé uniquement pour
     l'affichage (ombrage/paliers) — la décision "montagne ou pas" se base
     sur l'altitude brute, voir MOUNTAIN_ROCK_THRESHOLD/MOUNTAIN_SNOW_THRESHOLD."""
-    return _stretch(altitude, ALTITUDE_CONTRAST)
+    return _stretch(altitude, config.ALTITUDE_CONTRAST)
 
 
 def altitude_band(altitude):
     """Quantifie l'altitude en un palier discret (0..ALTITUDE_BANDS-1), pour
     l'ombrage/les lignes de niveau — façon carte topographique."""
     stretched = stretch_altitude(altitude)
-    band = int(stretched * ALTITUDE_BANDS)
-    return min(ALTITUDE_BANDS - 1, band)
+    band = int(stretched * config.ALTITUDE_BANDS)
+    return min(config.ALTITUDE_BANDS - 1, band)
 
 
 @dataclass
@@ -117,7 +97,7 @@ class GameMap:
     # compte, seule la valeur de biome_map (déjà tranchée) compte.
     altitude_map: dict = field(default_factory=dict)
     infinite: bool = False
-    _scale: float = FERTILITY_NOISE_SCALE
+    _scale: float = field(default_factory=lambda: config.FERTILITY_NOISE_SCALE)
     _offset_x: float = 0.0
     _offset_y: float = 0.0
     # Bruit d'altitude : complètement séparé de celui des biomes (voir
@@ -145,7 +125,7 @@ class GameMap:
                           calculées à la demande via `get_biome()`, pour ne
                           jamais avoir à générer une grille de taille infinie.
         """
-        self._scale    = FERTILITY_NOISE_SCALE
+        self._scale    = config.FERTILITY_NOISE_SCALE
         self._offset_x = offset_x if offset_x is not None else random.uniform(0, 1000)
         self._offset_y = offset_y if offset_y is not None else random.uniform(0, 1000)
         # Décalage fixe (et grand) par rapport au bruit de fertilité : le champ
@@ -191,12 +171,12 @@ class GameMap:
             persistence=0.5,
             lacunarity=2.0,
         )
-        return _stretch((n + 1) / 2, FERTILITY_CONTRAST)
+        return _stretch((n + 1) / 2, config.FERTILITY_CONTRAST)
 
     def _compute_altitude(self, x, y):
         n = noise.pnoise2(
-            (x + self._alt_offset_x) / ALTITUDE_NOISE_SCALE,
-            (y + self._alt_offset_y) / ALTITUDE_NOISE_SCALE,
+            (x + self._alt_offset_x) / config.ALTITUDE_NOISE_SCALE,
+            (y + self._alt_offset_y) / config.ALTITUDE_NOISE_SCALE,
             octaves=3,
             persistence=0.5,
             lacunarity=2.0,
@@ -205,13 +185,13 @@ class GameMap:
 
     def _compute_humidity(self, x, y):
         n = noise.pnoise2(
-            (x + self._hum_offset_x) / HUMIDITY_NOISE_SCALE,
-            (y + self._hum_offset_y) / HUMIDITY_NOISE_SCALE,
+            (x + self._hum_offset_x) / config.HUMIDITY_NOISE_SCALE,
+            (y + self._hum_offset_y) / config.HUMIDITY_NOISE_SCALE,
             octaves=3,
             persistence=0.5,
             lacunarity=2.0,
         )
-        return _stretch((n + 1) / 2, HUMIDITY_CONTRAST)
+        return _stretch((n + 1) / 2, config.HUMIDITY_CONTRAST)
 
     @staticmethod
     def _apply_mountain(base_biome, altitude):
@@ -219,21 +199,28 @@ class GameMap:
         altitude) ; sinon, au-delà d'un certain seuil de relief, le biome
         climatique (désert/prairie/forêt) laisse place à de la montagne —
         rocheuse, puis enneigée plus haut encore."""
-        if base_biome == BIOME_WATER:
+        if base_biome == config.BIOME_WATER:
             return base_biome
-        if altitude >= MOUNTAIN_SNOW_THRESHOLD:
-            return BIOME_MOUNTAIN_SNOW
-        if altitude >= MOUNTAIN_ROCK_THRESHOLD:
-            return BIOME_MOUNTAIN_ROCK
+        if altitude >= config.MOUNTAIN_SNOW_THRESHOLD:
+            return config.BIOME_MOUNTAIN_SNOW
+        if altitude >= config.MOUNTAIN_ROCK_THRESHOLD:
+            return config.BIOME_MOUNTAIN_ROCK
         return base_biome
 
     def get_biome(self, x, y):
         """Retourne le biome en (x, y), en le générant et le mettant en cache
         au besoin (mode infini). En mode classique, `biome_map` est déjà
-        entièrement rempli donc ceci revient à un simple accès dict."""
+        entièrement rempli donc ceci revient à un simple accès dict.
+
+        Garde-fou : en mode classique, une case hors bornes n'est jamais
+        générée — elle retourne BIOME_WATER. Sans ça, un système qui oublie
+        une vérification de bornes (feux, crues...) pouvait agrandir la carte
+        à l'infini en générant du terrain hors du monde."""
         pos = (x, y)
         biome = self.biome_map.get(pos)
         if biome is None:
+            if not self.infinite and not (0 <= x < self.width and 0 <= y < self.height):
+                return config.BIOME_WATER
             biome = self._generate_cell(x, y)
         return biome
 
@@ -261,7 +248,7 @@ class GameMap:
         return altitude
 
     def is_walkable(self, x, y):
-        return self.get_biome(x, y) != BIOME_WATER
+        return self.get_biome(x, y) != config.BIOME_WATER
 
     def update_biomes(self, positions, biome_type, world=None):
         for pos in positions:
@@ -272,6 +259,10 @@ class GameMap:
             self.altitude_map[pos] = 0.5
         if world is not None:
             world._land_cache_valid = False
+            # Le contenu du disque de cases autour d'une position dépend du
+            # biome : tout changement de biome invalide le cache des cases
+            # actives (voir world._active_cells).
+            world._cells_for_pos = {}
 
     def flood(self, positions, world=None):
         """Convertit `positions` en eau (crue), en mémorisant dans
@@ -286,11 +277,15 @@ class GameMap:
             if pos not in self.flood_memory:
                 prior_altitude = self.altitude_map.get(pos) if config.ENABLE_ALTITUDE else None
                 self.flood_memory[pos] = (self.biome_map.get(pos), prior_altitude)
-            self.biome_map[pos] = BIOME_WATER
+            self.biome_map[pos] = config.BIOME_WATER
             if config.ENABLE_ALTITUDE:
                 self.altitude_map[pos] = 0.5
         if world is not None:
             world._land_cache_valid = False
+            # Le contenu du disque de cases autour d'une position dépend du
+            # biome : tout changement de biome invalide le cache des cases
+            # actives (voir world._active_cells).
+            world._cells_for_pos = {}
 
     def unflood(self, positions, world=None):
         """Fait reculer l'eau sur `positions` (décrue) : restaure le relief
@@ -304,8 +299,12 @@ class GameMap:
                 if config.ENABLE_ALTITUDE:
                     self.altitude_map[pos] = altitude if altitude is not None else 0.5
             else:
-                self.biome_map[pos] = BIOME_PRAIRIE
+                self.biome_map[pos] = config.BIOME_PRAIRIE
                 if config.ENABLE_ALTITUDE:
                     self.altitude_map[pos] = 0.5
         if world is not None:
             world._land_cache_valid = False
+            # Le contenu du disque de cases autour d'une position dépend du
+            # biome : tout changement de biome invalide le cache des cases
+            # actives (voir world._active_cells).
+            world._cells_for_pos = {}

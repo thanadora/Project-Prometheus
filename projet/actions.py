@@ -13,9 +13,11 @@ ACTION_DRINK        = 5
 ACTION_VOTE_MIGRATE = 6
 ACTION_PICKUP       = 7
 ACTION_EAT          = 8
+ACTION_SLEEP        = 9
 
 TIMED_ACTIONS = {ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT,
-                 ACTION_IDLE, ACTION_DRINK, ACTION_PICKUP, ACTION_EAT}
+                 ACTION_IDLE, ACTION_DRINK, ACTION_PICKUP, ACTION_EAT,
+                 ACTION_SLEEP}
 FREE_ACTIONS  = {ACTION_VOTE_MIGRATE}
 
 # -----------------------------
@@ -69,7 +71,9 @@ OBS_ENERGY    = 3
 OBS_THIRST    = 4
 OBS_WATER_DX  = 5
 OBS_WATER_DY  = 6
-OBS_SIZE      = 7
+OBS_FATIGUE   = 7
+OBS_SICK      = 8
+OBS_SIZE      = 9
 
 # Labels lisibles (pour la GUI)
 ACTION_LABELS = {
@@ -81,5 +85,6 @@ ACTION_LABELS = {
     ACTION_DRINK:        "💧 Boire",
     ACTION_PICKUP:       "🎒 Ramasser",
     ACTION_EAT:          "🍖 Manger poche",
+    ACTION_SLEEP:        "😴 Dormir",
     ACTION_VOTE_MIGRATE: "🚶 Vote migration",
 }

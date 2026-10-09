@@ -64,6 +64,11 @@ MAX_AGE = 300
 
 # Population
 INITIAL_AGENT_COUNT = 5
+# Plafond de population (0 = illimité). Garde-fou contre l'explosion
+# exponentielle, surtout en monde infini où chaque agent trouve de la
+# nourriture autour de lui : sans plafond, la population peut passer de
+# quelques agents à plusieurs milliers en quelques centaines de ticks.
+MAX_POPULATION = 0
 
 # UI
 CELL_SIZE = 15
@@ -81,6 +86,7 @@ BIOME_PRAIRIE = 2
 BIOME_FOREST  = 3
 BIOME_MOUNTAIN_ROCK = 4
 BIOME_MOUNTAIN_SNOW = 5
+BIOME_BURNT   = 6   # sol brûlé par un incendie — cendre fertile, redevient prairie
 
 WATER_THRESHOLD   = 0.38
 FOREST_THRESHOLD  = 0.45
@@ -170,6 +176,7 @@ BIOME_COLORS = {
     BIOME_FOREST:  "#1e4d2b",
     BIOME_MOUNTAIN_ROCK: "#8a8072",
     BIOME_MOUNTAIN_SNOW: "#eef1f5",
+    BIOME_BURNT:   "#3b322a",
 }
 
 # -----------------------------
@@ -177,15 +184,67 @@ BIOME_COLORS = {
 # -----------------------------
 # Pas d'entrée pour BIOME_MOUNTAIN_ROCK / BIOME_MOUNTAIN_SNOW : zone hostile,
 # aucune nourriture n'y pousse (food.py ignore tout biome absent d'ici).
+# La cendre laissée par un incendie est au contraire très fertile : la
+# nourriture y repousse vite (respawn élevé) pendant la durée du biome brûlé.
 FOOD_TYPES = {
     BIOME_DESERT:  dict(gain=10, respawn=0.004, capacity=3, color="#e8c84a"),
     BIOME_PRAIRIE: dict(gain=22, respawn=0.010, capacity=5, color="#90ee90"),
     BIOME_FOREST:  dict(gain=38, respawn=0.018, capacity=8, color="#00aa00"),
+    BIOME_BURNT:   dict(gain=18, respawn=0.030, capacity=4, color="#9c8f6f"),
 }
+
+# -----------------------------
+# POURRITURE DE LA NOURRITURE
+# -----------------------------
+# Une nourriture au sol reste fraîche FOOD_FRESH_TICKS (environ un jour de
+# jeu), puis sa valeur nutritive décroît linéairement jusqu'à
+# FOOD_MIN_FRESHNESS sur FOOD_ROT_TICKS ticks. Une fois au minimum, elle
+# finit par disparaître (FOOD_ROT_DISAPPEAR_CHANCE par tick). Dans
+# l'inventaire, la fraîcheur décroît par tick mais ne descend jamais sous le
+# minimum : la poche ralentit la pourriture sans l'arrêter.
+#
+# Calibré pour être observable sans être envahissant : la fraîcheur baisse
+# dès ~50 ticks (un jour de jeu), la tête de mort apparaît vers ~85 ticks de
+# survie, et une petite fraction des repousses naît déjà pourrie pour rester
+# visible même dans les mondes sur-pâturés. Un tas au maximum de pourriture
+# disparaît en ~100 ticks en moyenne.
+ENABLE_FOOD_ROT            = True
+FOOD_FRESH_TICKS           = 50
+FOOD_ROT_TICKS             = 60
+FOOD_MIN_FRESHNESS         = 0.3
+# Chance qu'une repousse (case vide qui reverdit) naisse déjà pourrie.
+FOOD_SPOIL_ON_GROWTH_CHANCE = 0.01
+# Seuil de fraîcheur sous lequel la nourriture est affichée avec une tête de
+# mort (💀) au lieu d'un carré coloré : le changement de couleur seul était
+# trop discret pour repérer la pourriture en jeu.
+FOOD_ROTTEN_MARKER         = 0.5
+FOOD_ROT_DISAPPEAR_CHANCE  = 0.05
+FOOD_INVENTORY_ROT_RATE    = 0.0005
+
+# -----------------------------
+# MALADIE (nourriture pourrie)
+# -----------------------------
+# Manger une nourriture pourrie (fraîcheur <= FOOD_SICKNESS_THRESHOLD, celle
+# qui est marquée 💀) peut rendre l'agent malade. La maladie est purement
+# physiologique : elle fait perdre énormément d'énergie à chaque tick (bien
+# plus que le coût de vie normal), donc la survie en dépend directement —
+# aucun comportement d'IA n'est requis pour la gérer. Le repas lui-même
+# rapporte déjà moins (valeur × fraîcheur).
+ENABLE_SICKNESS        = True
+FOOD_SICKNESS_THRESHOLD = 0.5
+SICKNESS_CHANCE         = 0.35   # probabilité de tomber malade par repas pourri
+SICKNESS_DURATION       = 60     # durée de la maladie (ticks)
+SICKNESS_ENERGY_DRAIN   = 3.0    # énergie perdue par tick de maladie (massif)
 
 INITIAL_FOOD_COUNT = 50
 FOOD_RESPAWN_RATE  = 0.0005
 FOOD_GAIN          = 20
+
+# Pousse évaluée tous les FOOD_GROWTH_INTERVAL ticks (proba multipliée d'autant)
+# au lieu de chaque tick : en monde infini, tester ~10 000 cases par tick pour
+# une probabilité moyenne de ~0.5 % dominait largement la boucle de simulation.
+# L'espérance du nombre de pousses reste la même, à granularité plus grossière.
+FOOD_GROWTH_INTERVAL = 4
 
 # -----------------------------
 # CYCLE JOUR / NUIT
@@ -282,6 +341,70 @@ SOIL_MOISTURE_MAX  = 1
 SOIL_MOISTURE_INIT = 1
 
 # -----------------------------
+# FEUX DE FORÊT
+# -----------------------------
+# Un feu démarre au hasard (probabilité multipliée par la météo et la saison),
+# se propage aux forêts voisines, détruit la nourriture des cases touchées,
+# blesse les agents pris dedans, puis laisse une cendre fertile (BIOME_BURNT)
+# qui redevient prairie après FIRE_ASH_DURATION ticks.
+ENABLE_FIRES               = True
+FIRE_IGNITION_CHANCE       = 0.003    # par tick, avant multiplicateurs
+FIRE_SPREAD_CHANCE         = 0.12     # par voisin et par tick
+FIRE_BURN_DURATION         = 25       # ticks de combustion avant la cendre
+FIRE_ASH_DURATION          = 400      # durée de la cendre fertile
+FIRE_DAMAGE                = 4.0      # dégâts par tick à un agent dans les flammes
+FIRE_MAX_ACTIVE            = 300      # garde-fou : cases en feu simultanées
+FIRE_EXTINGUISH_CHANCE_RAIN = 0.08    # prob. par tick d'éteindre une case sous pluie/orage
+
+# La pluie/le gel empêchent le feu de s'étendre (et l'éteignent peu à peu) ;
+# la sécheresse et l'été le rendent beaucoup plus probable.
+FIRE_WEATHER_MULT = {
+    WEATHER_CLEAR:   0.5,
+    WEATHER_RAIN:    0.0,
+    WEATHER_STORM:   0.0,
+    WEATHER_DROUGHT: 4.0,
+    WEATHER_FROST:   0.1,
+}
+FIRE_SEASON_MULT = {
+    SEASON_SPRING: 0.6,
+    SEASON_SUMMER: 2.0,
+    SEASON_AUTUMN: 1.0,
+    SEASON_WINTER: 0.1,
+}
+
+# -----------------------------
+# INONDATIONS
+# -----------------------------
+# Pendant la pluie/la tempête, des berges (cases praticables adjacentes à
+# l'eau) sont inondées temporairement : elles deviennent infranchissables
+# puis redeviennent normales après FLOOD_DURATION ticks.
+ENABLE_FLOODS          = True
+FLOOD_CHANCE_RAIN      = 0.03    # par tick de pluie
+FLOOD_CHANCE_STORM     = 0.06    # par tick de tempête
+FLOOD_CELLS_PER_EVENT  = 4       # cases inondées par déclenchement
+FLOOD_DURATION         = 60      # ticks avant décrue d'une case
+FLOOD_MAX_CELLS        = 120     # garde-fou : cases inondées simultanées
+FLOOD_RADIUS           = 6       # rayon autour des agents pour chercher une berge
+
+# -----------------------------
+# SOMMEIL / FATIGUE
+# -----------------------------
+# La fatigue monte quand l'agent agit et bouge, baisse en dormant. Au-delà de
+# EXHAUSTION_THRESHOLD, tous les coûts d'énergie sont multipliés (épuisement).
+# Dormir régénère de l'énergie sans payer le coût de repos, avec un bonus la nuit.
+ENABLE_FATIGUE            = True
+MAX_FATIGUE               = 100
+FATIGUE_PER_TICK          = 0.15    # fatigue gagnée par tick éveillé
+FATIGUE_MOVE_EXTRA        = 0.25    # fatigue supplémentaire en se déplaçant
+FATIGUE_IDLE_RECOVERY     = 0.05    # légère récupération en restant immobile
+FATIGUE_REST_RECOVERY     = 0.8     # récupération par tick en dormant
+EXHAUSTION_THRESHOLD      = 80      # au-delà : coûts d'énergie multipliés
+EXHAUSTION_COST_MULT      = 1.5
+SLEEP_ENERGY_REGEN        = 0.8     # énergie regagnée par tick en dormant
+SLEEP_NIGHT_MULT          = 1.5     # bonus de récupération la nuit
+SLEEP_FATIGUE_THRESHOLD   = 40      # seuil de fatigue pour dormir la nuit
+
+# -----------------------------
 # MIGRATION
 # -----------------------------
 # Part des agents devant voter "en détresse" pour déclencher la migration
@@ -335,6 +458,11 @@ ENABLE_MIGRATION   = True
 ENABLE_INVENTORY   = True
 ENABLE_REPRODUCTION = True
 ENABLE_AGE_DEATH   = True
+ENABLE_FATIGUE     = True
+ENABLE_FOOD_ROT    = True
+ENABLE_SICKNESS    = True
+ENABLE_FIRES       = True
+ENABLE_FLOODS      = True
 
 # -----------------------------
 # COMMUNICATION (lettres)

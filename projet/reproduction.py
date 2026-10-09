@@ -7,10 +7,16 @@ from logger import get_logger
 from agent import Agent
 
 
-def reproduce(agent, world, policy):
+def reproduce(agent, world, policy, occupied=None):
     """
     Tente de créer un enfant pour `agent`.
     La décision est déléguée à la policy ; la mécanique reste ici.
+
+    `occupied` : ensemble des positions occupées, fourni par world_phase pour
+    éviter de reconstruire un set de tous les agents à chaque tentative de
+    reproduction (O(N) par agent → O(N²) par tick quand la population monte).
+    Si None (appel direct), il est calculé ici.
+
     Retourne un nouvel Agent ou None.
     """
     import config
@@ -20,7 +26,8 @@ def reproduce(agent, world, policy):
         return None
 
     infinite  = getattr(world, "infinite", False)
-    occupied  = {(a.x, a.y) for a in world.agents}
+    if occupied is None:
+        occupied = {(a.x, a.y) for a in world.agents}
     neighbors = [
         (agent.x + dx, agent.y + dy)
         for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]

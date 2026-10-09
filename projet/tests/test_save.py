@@ -3,9 +3,9 @@ import json
 import pytest
 
 import config
-from save import save_world, load_world
+from save import save_world, load_world, SaveFileError
 from policy import HardcodedPolicy, RandomPolicy
-from policy_registry import policy_name
+from policy_registry import default_policy_name, policy_name
 
 from tests.conftest import make_world, make_agent
 
@@ -107,19 +107,34 @@ class TestSaveLoadEdgeCases:
         loaded = load_world(str(path))
         assert policy_name(loaded.agents[0].policy) == "Hardcoded"
 
-    def test_corrupted_json_raises(self, tmp_path):
+    def test_unknown_policy_name_falls_back_to_default(self, tmp_path):
+        # Retirer une IA du registre ne doit pas rendre les anciennes
+        # sauvegardes impossibles à charger : repli documenté sur la policy
+        # par défaut (avec avertissement dans les logs).
+        world = make_world(width=5, height=5)
+        world.agents = [make_agent(id=1)]
+        path = tmp_path / "save.json"
+        save_world(world, str(path))
+
+        with open(path) as f:
+            data = json.load(f)
+        data["agents"][0]["policy"] = "PolicyRetirée"
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        loaded = load_world(str(path))
+        assert policy_name(loaded.agents[0].policy) == default_policy_name()
+
+    def test_corrupted_json_raises_explicit_save_error(self, tmp_path):
         path = tmp_path / "broken.json"
         path.write_text("{not valid json")
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(SaveFileError):
             load_world(str(path))
 
-    def test_known_fragility_missing_required_key_raises_keyerror(self, tmp_path):
-        """Documente un manque de robustesse existant : load_world() accède
-        directement à data["tick"], data["weather"], etc. sans valeur par
-        défaut ni message d'erreur clair. Un fichier de sauvegarde tronqué
-        ou partiellement corrompu (mais toujours du JSON valide) fait planter
-        le chargement avec un KeyError peu explicite plutôt qu'un message
-        du type "fichier de sauvegarde invalide"."""
+    def test_missing_required_key_raises_explicit_save_error(self, tmp_path):
+        """Un fichier de sauvegarde tronqué ou partiellement corrompu (mais
+        toujours du JSON valide) doit produire une SaveFileError claire,
+        pas un KeyError brut remonté du fin fond du chargement."""
         world = make_world(width=5, height=5)
         path = tmp_path / "save.json"
         save_world(world, str(path))
@@ -128,17 +143,13 @@ class TestSaveLoadEdgeCases:
         del data["tick"]
         with open(path, "w") as f:
             json.dump(data, f)
-        with pytest.raises(KeyError):
+        with pytest.raises(SaveFileError, match="tick"):
             load_world(str(path))
 
-    def test_known_quirk_world_dimensions_are_not_persisted(self, tmp_path):
-        """Documente un autre manque : World.width/height ne sont jamais
-        écrits dans le fichier de sauvegarde. Au chargement, load_world()
-        utilise TOUJOURS config.WORLD_WIDTH / config.WORLD_HEIGHT courants
-        plutôt que la taille du monde effectivement sauvegardé. Si la config
-        a changé entre-temps (ou si on charge une sauvegarde faite avec une
-        autre taille de monde), la carte et les agents chargés peuvent se
-        retrouver hors des nouvelles dimensions du monde sans avertissement."""
+    def test_world_dimensions_are_persisted_and_used_on_load(self, tmp_path):
+        """Les dimensions du monde sont désormais écrites dans la sauvegarde
+        et relues au chargement, même si la configuration courante a changé
+        entre-temps."""
         original_w, original_h = config.WORLD_WIDTH, config.WORLD_HEIGHT
         try:
             world = make_world(width=50, height=50)
@@ -148,8 +159,83 @@ class TestSaveLoadEdgeCases:
             config.WORLD_WIDTH, config.WORLD_HEIGHT = 5, 5
             loaded = load_world(str(path))
 
-            # Le monde chargé a la taille de la config ACTUELLE (5x5), pas
-            # celle (50x50) du monde effectivement sauvegardé.
-            assert (loaded.width, loaded.height) == (5, 5)
+            assert (loaded.width, loaded.height) == (50, 50)
         finally:
             config.WORLD_WIDTH, config.WORLD_HEIGHT = original_w, original_h
+
+    def test_nonexistent_file_raises_save_file_error(self, tmp_path):
+        with pytest.raises(SaveFileError, match="introuvable"):
+            load_world(str(tmp_path / "nope.json"))
+
+    def test_agent_missing_field_raises_save_file_error(self, tmp_path):
+        world = make_world(width=5, height=5)
+        world.agents = [make_agent(id=1)]
+        path = tmp_path / "save.json"
+        save_world(world, str(path))
+        with open(path) as f:
+            data = json.load(f)
+        del data["agents"][0]["energy"]
+        with open(path, "w") as f:
+            json.dump(data, f)
+        with pytest.raises(SaveFileError, match="Agent"):
+            load_world(str(path))
+
+
+class TestSaveLoadNewState:
+    def test_fatigue_round_trips(self, tmp_path):
+        world = make_world(width=5, height=5)
+        world.agents = [make_agent(id=1, fatigue=42.5)]
+        path = tmp_path / "save.json"
+        save_world(world, str(path))
+        loaded = load_world(str(path))
+        assert loaded.agents[0].fatigue == 42.5
+
+    def test_sickness_round_trips(self, tmp_path):
+        world = make_world(width=5, height=5)
+        world.agents = [make_agent(id=1, sick_ticks=42)]
+        path = tmp_path / "save.json"
+        save_world(world, str(path))
+        loaded = load_world(str(path))
+        assert loaded.agents[0].sick_ticks == 42
+
+    def test_food_age_round_trips(self, tmp_path):
+        world = make_world(width=5, height=5, food_amounts={(2, 2): 2})
+        world.food.food_age[(2, 2)] = 77
+        path = tmp_path / "save.json"
+        save_world(world, str(path))
+        loaded = load_world(str(path))
+        assert loaded.food.food_age[(2, 2)] == 77
+
+    def test_catastrophe_state_round_trips(self, tmp_path):
+        world = make_world(width=5, height=5)
+        world.burning[(1, 1)] = 10
+        world.burnt[(2, 2)] = 300
+        world.flooded[(3, 3)] = 40
+        path = tmp_path / "save.json"
+        save_world(world, str(path))
+        loaded = load_world(str(path))
+        assert loaded.burning == {(1, 1): 10}
+        assert loaded.burnt == {(2, 2): 300}
+        assert loaded.flooded == {(3, 3): 40}
+
+    def test_old_save_without_new_fields_still_loads(self, tmp_path):
+        """Compatibilité ascendante : une sauvegarde d'avant les catastrophes
+        (sans burning/burnt/flooded/fatigue/food_age) se charge sans erreur."""
+        world = make_world(width=5, height=5)
+        world.agents = [make_agent(id=1)]
+        path = tmp_path / "save.json"
+        save_world(world, str(path))
+        with open(path) as f:
+            data = json.load(f)
+        for key in ("food_age", "burning", "burnt", "flooded"):
+            del data[key]
+        for agent in data["agents"]:
+            del agent["fatigue"]
+            del agent["sick_ticks"]
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        loaded = load_world(str(path))
+        assert loaded.agents[0].fatigue == 0.0
+        assert loaded.agents[0].sick_ticks == 0
+        assert loaded.burning == {} and loaded.burnt == {} and loaded.flooded == {}

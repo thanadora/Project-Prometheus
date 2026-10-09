@@ -1,10 +1,15 @@
+import random
+
 import config
+import pytest
+from actions import ACTION_IDLE
+from agent import update_agent_life
 from world import (
     World, compute_reward, initialize_world, _resolve_collisions,
     _remove_dead_agents, _new_map_and_food, world_phase,
 )
 from map import GameMap
-from food import FoodSystem
+from food import FoodSystem, freshness_for_age
 from policy import HardcodedPolicy
 
 from tests.conftest import make_world, make_agent
@@ -95,6 +100,16 @@ class TestComputeReward:
         agent = make_agent(energy=50, thirst=10)
         r = compute_reward(agent, prev_energy=50, prev_thirst=10)
         assert r < 0
+
+    def test_sick_agent_energy_loss_shows_in_reward(self):
+        """La maladie n'a pas de pénalité de reward dédiée : c'est la perte
+        d'énergie massive qui doit se refléter d'elle-même dans le reward."""
+        world = make_world(width=5, height=5, tick=0)
+        agent = make_agent(energy=50, thirst=50, sick_ticks=10)
+        agent.pending_action = ACTION_IDLE
+        update_agent_life(agent, world)
+        reward = compute_reward(agent, prev_energy=50, prev_thirst=50)
+        assert reward < -0.2  # ≈ -0.3 rien qu'avec le drain de maladie
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +207,9 @@ class TestInfiniteWorldHelpers:
 class TestActiveCellsAndChunkUnloading:
     def test_active_cells_covers_area_around_living_agents(self):
         from world import _active_cells
-        world = make_world(width=20, height=20)
+        # Assez grand pour que tout le disque autour de l'agent soit dans les
+        # bornes (en mode classique, une case hors bornes ne se génère plus).
+        world = make_world(width=40, height=40)
         world.agents = [make_agent(x=10, y=10)]
         cells = _active_cells(world)
         assert (10, 10) in cells
@@ -274,6 +291,20 @@ class TestActiveCellsAndChunkUnloading:
         _resolve_collisions(world)
         assert world.food.food_map[(2, 2)] == 1
 
+    def test_agent_eating_rotten_ground_food_gains_less_and_can_get_sick(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.0)  # maladie garantie
+        world = make_world(width=5, height=5, food_amounts={(2, 2): 1})
+        age = config.FOOD_FRESH_TICKS + config.FOOD_ROT_TICKS
+        world.food.food_age[(2, 2)] = age
+        agent = make_agent(x=2, y=2, energy=10, thirst=100)
+        world.agents = [agent]
+
+        _resolve_collisions(world)
+
+        expected_gain = config.FOOD_TYPES[config.BIOME_PRAIRIE]["gain"] * freshness_for_age(age)
+        assert agent.energy == pytest.approx(10 + expected_gain)
+        assert agent.sick_ticks == config.SICKNESS_DURATION
+
 
 class TestRemoveDeadAgents:
     def test_removes_dead_keeps_alive(self):
@@ -326,6 +357,25 @@ class TestWorldPhaseIntegration:
                 assert 0 <= a.thirst <= config.MAX_THIRST
             for amount in world.food.food_map.values():
                 assert amount >= 0
+
+    def test_food_growth_runs_only_on_interval_ticks(self, monkeypatch):
+        """La pousse n'est évaluée que tous les FOOD_GROWTH_INTERVAL ticks —
+        c'est l'optimisation qui évite de parcourir tout le disque actif à
+        chaque tick en monde infini."""
+        from world import world_phase
+        from policy import HardcodedPolicy
+
+        calls = []
+        monkeypatch.setattr(config, "FOOD_GROWTH_INTERVAL", 4)
+        monkeypatch.setattr(FoodSystem, "grow_food",
+                            lambda self, *a, **k: calls.append(1))
+
+        world = make_world(width=10, height=10)
+        world.agents = [make_agent(x=5, y=5, policy=HardcodedPolicy())]
+        policy = HardcodedPolicy()
+        for _ in range(8):
+            world_phase(world, policy)
+        assert len(calls) == 2  # ticks 0 et 4
 
     def test_agent_can_die_and_be_removed_over_time(self):
         config.ENABLE_MIGRATION = False

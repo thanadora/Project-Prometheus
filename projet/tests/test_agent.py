@@ -1,13 +1,15 @@
 import random
 
 import config
+import pytest
 from agent import (
     Agent, perceive, build_observation, apply_free_action, apply_timed_action,
     _update_thirst, update_agent_life, think,
 )
 from actions import (
     ACTION_UP, ACTION_DOWN, ACTION_LEFT, ACTION_RIGHT, ACTION_IDLE,
-    ACTION_DRINK, ACTION_PICKUP, ACTION_EAT, ACTION_VOTE_MIGRATE, action_speak,
+    ACTION_DRINK, ACTION_PICKUP, ACTION_EAT, ACTION_VOTE_MIGRATE, ACTION_SLEEP,
+    action_speak,
 )
 
 from tests.conftest import make_world, make_agent
@@ -159,12 +161,36 @@ class TestBuildObservation:
         obs = build_observation(agent, world)
         assert obs[2] == -1
 
-    def test_observation_has_seven_features(self):
+    def test_observation_has_nine_features(self):
         world = make_world(width=10, height=10)
         agent = make_agent(x=5, y=5)
         agent.perception = perceive(agent, world)
         obs = build_observation(agent, world)
-        assert len(obs) == 7
+        assert len(obs) == 9
+
+    def test_fatigue_is_normalized_in_observation(self):
+        world = make_world(width=10, height=10)
+        agent = make_agent(x=5, y=5)
+        agent.perception = perceive(agent, world)
+        agent.fatigue = config.MAX_FATIGUE / 2
+        obs = build_observation(agent, world)
+        assert obs[7] == 0.5
+
+    def test_fatigue_slot_is_zero_when_module_disabled(self):
+        config.ENABLE_FATIGUE = False
+        world = make_world(width=10, height=10)
+        agent = make_agent(x=5, y=5)
+        agent.perception = perceive(agent, world)
+        agent.fatigue = 99
+        assert build_observation(agent, world)[7] == 0.0
+
+    def test_sickness_flag_in_observation(self):
+        world = make_world(width=10, height=10)
+        agent = make_agent(x=5, y=5)
+        agent.perception = perceive(agent, world)
+        assert build_observation(agent, world)[8] == 0.0
+        agent.sick_ticks = 10
+        assert build_observation(agent, world)[8] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -302,22 +328,17 @@ class TestApplyTimedActionMovement:
         apply_timed_action(agent, world, ACTION_RIGHT)
         assert agent.alive is False
 
-    def test_out_of_bounds_move_blocked_in_non_toroidal_world(self, monkeypatch):
-        # NB: agent.py fait `from config import TOROIDAL_WORLD` (import direct),
-        # donc c'est bien agent.TOROIDAL_WORLD qu'il faut patcher pour changer
-        # le comportement à l'exécution — patcher config.TOROIDAL_WORLD seul
-        # est sans effet ici. Voir test_config_propagation.py pour le détail
-        # de cette particularité (bug réel de l'application).
-        import agent as agent_module
-        monkeypatch.setattr(agent_module, "TOROIDAL_WORLD", False)
+    def test_out_of_bounds_move_blocked_in_non_toroidal_world(self):
+        # Depuis la correction de propagation de config, c'est bien
+        # config.TOROIDAL_WORLD (lu au moment de l'action) qui compte.
+        config.TOROIDAL_WORLD = False
         world = make_world(width=3, height=3)
         agent = make_agent(x=0, y=0)
         apply_timed_action(agent, world, ACTION_LEFT)
         assert (agent.x, agent.y) == (0, 0)
 
-    def test_move_wraps_around_in_toroidal_world(self, monkeypatch):
-        import agent as agent_module
-        monkeypatch.setattr(agent_module, "TOROIDAL_WORLD", True)
+    def test_move_wraps_around_in_toroidal_world(self):
+        config.TOROIDAL_WORLD = True
         world = make_world(width=3, height=3)
         agent = make_agent(x=0, y=0)
         apply_timed_action(agent, world, ACTION_LEFT)
@@ -484,3 +505,187 @@ class TestThink:
         think(agent, world, policy)
         assert agent.free_actions == [ACTION_VOTE_MIGRATE]
         assert agent.pending_action == ACTION_DRINK
+
+
+# ---------------------------------------------------------------------------
+# Fatigue & sommeil
+# ---------------------------------------------------------------------------
+class TestFatigueAndSleep:
+    def test_fatigue_increases_while_awake(self):
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=50)
+        agent.pending_action = ACTION_IDLE
+        update_agent_life(agent, world)
+        assert agent.fatigue == max(0.0, config.FATIGUE_PER_TICK - config.FATIGUE_IDLE_RECOVERY)
+
+    def test_fatigue_increases_faster_when_moving(self):
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=50)
+        agent.pending_action = ACTION_RIGHT
+        update_agent_life(agent, world)
+        assert agent.fatigue == config.FATIGUE_PER_TICK + config.FATIGUE_MOVE_EXTRA
+
+    def test_fatigue_capped_at_max(self):
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=50, fatigue=config.MAX_FATIGUE)
+        agent.pending_action = ACTION_RIGHT
+        update_agent_life(agent, world)
+        assert agent.fatigue == config.MAX_FATIGUE
+
+    def test_sleeping_recovers_fatigue_and_energy(self):
+        world = make_world(width=5, height=5, tick=0)  # plein jour
+        agent = make_agent(x=2, y=2, energy=50, thirst=50)
+        agent.fatigue = 50
+        agent.pending_action = ACTION_SLEEP
+        update_agent_life(agent, world)
+        assert agent.fatigue == 50 - config.FATIGUE_REST_RECOVERY
+        assert agent.energy == min(config.MAX_ENERGY, 50 + config.SLEEP_ENERGY_REGEN)
+
+    def test_sleeping_at_night_regenerates_more(self):
+        config.ENABLE_DAY_NIGHT = True
+        night_tick = int(config.DAY_DURATION * (1 - config.NIGHT_RATIO)) + 1
+        world = make_world(width=5, height=5, tick=night_tick)
+        assert world.is_night() is True
+        agent = make_agent(x=2, y=2, energy=50, thirst=50)
+        agent.pending_action = ACTION_SLEEP
+        update_agent_life(agent, world)
+        assert agent.energy == min(
+            config.MAX_ENERGY,
+            50 + config.SLEEP_ENERGY_REGEN * config.SLEEP_NIGHT_MULT,
+        )
+
+    def test_exhaustion_multiplies_idle_cost(self):
+        world = make_world(width=5, height=5, tick=0)
+        agent = make_agent(x=2, y=2, energy=50, thirst=50)
+        agent.fatigue = config.EXHAUSTION_THRESHOLD
+        agent.pending_action = ACTION_IDLE
+        update_agent_life(agent, world)
+        expected = 50 - (config.IDLE_COST * config.EXHAUSTION_COST_MULT
+                         + (1 / config.MAX_AGE) * 0.1)
+        assert abs(agent.energy - expected) < 1e-9
+
+    def test_sleep_action_is_noop_when_fatigue_disabled(self):
+        config.ENABLE_FATIGUE = False
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=50, fatigue=50)
+        apply_timed_action(agent, world, ACTION_SLEEP)
+        assert agent.energy == 50
+        assert agent.fatigue == 50
+
+    def test_fatigue_does_not_accumulate_when_disabled(self):
+        config.ENABLE_FATIGUE = False
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=50)
+        agent.pending_action = ACTION_RIGHT
+        update_agent_life(agent, world)
+        assert agent.fatigue == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Fraîcheur de la nourriture (ramassage / consommation / vieillissement)
+# ---------------------------------------------------------------------------
+class TestFoodFreshness:
+    def test_pickup_stores_freshness_from_ground(self):
+        world = make_world(width=5, height=5, food_amounts={(2, 2): 1})
+        world.food.food_age[(2, 2)] = config.FOOD_FRESH_TICKS + config.FOOD_ROT_TICKS
+        agent = make_agent(x=2, y=2)
+        apply_timed_action(agent, world, ACTION_PICKUP)
+        assert agent.inventory[0]["freshness"] == pytest.approx(config.FOOD_MIN_FRESHNESS)
+
+    def test_pickup_fresh_food_has_full_freshness(self):
+        world = make_world(width=5, height=5, food_amounts={(2, 2): 1})
+        agent = make_agent(x=2, y=2)
+        apply_timed_action(agent, world, ACTION_PICKUP)
+        assert agent.inventory[0]["freshness"] == 1.0
+
+    def test_eating_stale_food_restores_less_energy(self):
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=0, thirst=100)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD, "value": 20, "freshness": 0.5}]
+        apply_timed_action(agent, world, ACTION_EAT)
+        assert agent.energy == 10
+
+    def test_eating_without_freshness_key_defaults_to_full_value(self):
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=0, thirst=100)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD, "value": 20}]
+        apply_timed_action(agent, world, ACTION_EAT)
+        assert agent.energy == 20
+
+    def test_inventory_food_ages_over_time(self):
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=50, thirst=50)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD, "value": 20, "freshness": 1.0}]
+        agent.pending_action = ACTION_IDLE
+        update_agent_life(agent, world)
+        assert agent.inventory[0]["freshness"] == 1.0 - config.FOOD_INVENTORY_ROT_RATE
+
+    def test_inventory_food_never_rot_below_min(self):
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=50, thirst=50)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD,
+                            "value": 20,
+                            "freshness": config.FOOD_MIN_FRESHNESS}]
+        agent.pending_action = ACTION_IDLE
+        update_agent_life(agent, world)
+        assert agent.inventory[0]["freshness"] == config.FOOD_MIN_FRESHNESS
+
+
+# ---------------------------------------------------------------------------
+# Maladie (nourriture pourrie)
+# ---------------------------------------------------------------------------
+class TestSickness:
+    def test_eating_rotten_food_can_cause_sickness(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.0)  # < chance de maladie
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=10, thirst=100)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD,
+                            "value": 20,
+                            "freshness": config.FOOD_SICKNESS_THRESHOLD}]
+        apply_timed_action(agent, world, ACTION_EAT)
+        assert agent.sick_ticks == config.SICKNESS_DURATION
+
+    def test_eating_fresh_food_never_causes_sickness(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.0)
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=10, thirst=100)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD, "value": 20, "freshness": 1.0}]
+        apply_timed_action(agent, world, ACTION_EAT)
+        assert agent.sick_ticks == 0
+
+    def test_sickness_malus_disabled_by_config(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.0)
+        config.ENABLE_SICKNESS = False
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=10, thirst=100)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD, "value": 20, "freshness": 0.3}]
+        apply_timed_action(agent, world, ACTION_EAT)
+        assert agent.sick_ticks == 0
+
+    def test_rot_disabled_prevents_sickness(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.0)
+        config.ENABLE_FOOD_ROT = False
+        world = make_world(width=5, height=5)
+        agent = make_agent(x=2, y=2, energy=10, thirst=100)
+        agent.inventory = [{"type": config.OBJECT_TYPE_FOOD, "value": 20, "freshness": 0.3}]
+        apply_timed_action(agent, world, ACTION_EAT)
+        assert agent.sick_ticks == 0
+
+    def test_sickness_drains_energy_and_recovers(self):
+        world = make_world(width=5, height=5, tick=0)
+        agent = make_agent(x=2, y=2, energy=50, thirst=50)
+        agent.sick_ticks = 1
+        agent.pending_action = ACTION_IDLE
+        update_agent_life(agent, world)
+        expected = 50 - (config.IDLE_COST + (1 / config.MAX_AGE) * 0.1
+                         + config.SICKNESS_ENERGY_DRAIN)
+        assert abs(agent.energy - expected) < 1e-9
+        assert agent.sick_ticks == 0  # guéri
+
+    def test_sick_agent_can_die_of_disease(self):
+        world = make_world(width=5, height=5, tick=0)
+        agent = make_agent(x=2, y=2, energy=config.SICKNESS_ENERGY_DRAIN - 0.01, thirst=50)
+        agent.sick_ticks = 5
+        agent.pending_action = ACTION_IDLE
+        update_agent_life(agent, world)
+        assert agent.alive is False

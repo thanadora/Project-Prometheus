@@ -40,7 +40,7 @@ def run_config_gui():
     def make_tab(nb, title):
         frame = ttk.Frame(nb)
         nb.add(frame, text=title)
-        canvas = tk.Canvas(frame, bg=BG, highlightthickness=0, width=560, height=400)
+        canvas = tk.Canvas(frame, bg=BG, highlightthickness=0, width=560, height=560)
         sb = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -52,8 +52,25 @@ def run_config_gui():
             canvas.itemconfig(win_id, width=canvas.winfo_width())
         inner.bind("<Configure>", on_configure)
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
+        # Marqueur utilisé par le gestionnaire global de molette (voir plus bas).
+        canvas._scrollable_tab = True
         return inner
+
+    def on_mousewheel(event):
+        """Fait défiler l'onglet actuellement sous le curseur de la souris.
+
+        Un seul binding global pour toute l'application : sur X11 la molette
+        émet Button-4/Button-5 (pas MouseWheel), et un `bind_all` par onglet
+        écrasait le binding précédent — seul le dernier onglet créé répondait
+        à la molette. Ici on remonte depuis le widget sous le curseur jusqu'au
+        canvas de l'onglet, donc ça marche partout (curseurs, labels...)."""
+        widget = root.winfo_containing(event.x_root, event.y_root)
+        while widget is not None:
+            if isinstance(widget, tk.Canvas) and getattr(widget, "_scrollable_tab", False):
+                up = (getattr(event, "num", None) == 4) or (getattr(event, "delta", 0) > 0)
+                widget.yview_scroll(-1 if up else 1, "units")
+                return "break"
+            widget = getattr(widget, "master", None)
 
     fields = {}
 
@@ -94,6 +111,12 @@ def run_config_gui():
     nb = ttk.Notebook(root)
     nb.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+    # Molette : un seul binding global. X11 émet Button-4/5, Windows/macOS
+    # émettent MouseWheel — les deux sont couverts (voir on_mousewheel()).
+    root.bind_all("<MouseWheel>", on_mousewheel)
+    root.bind_all("<Button-4>", on_mousewheel)
+    root.bind_all("<Button-5>", on_mousewheel)
+
     # ── Onglet 1 : Monde ─────────────────────────────────────────
     t = make_tab(nb, "🌍 Monde")
     section(t, 0, "Dimensions")
@@ -123,6 +146,9 @@ def run_config_gui():
     add_float(t, 11, "Seuil prairie",       "PRAIRIE_THRESHOLD",   0.1, 0.9)
     add_float(t, 12, "Influence humidité",  "HUMIDITY_INFLUENCE",  0.0, 1.0)
 
+    section(t, 13, "Population")
+    add_int  (t, 14, "Population max (0 = ∞)", "MAX_POPULATION",   0, 2000)
+
     # ── Onglet 2 : Énergie ───────────────────────────────────────
     t = make_tab(nb, "⚡ Énergie")
     section(t, 0, "Énergie & âge")
@@ -133,6 +159,13 @@ def run_config_gui():
     add_float(t, 5, "Coût déplacement",    "MOVE_COST",       0.1, 5.0)
     add_float(t, 6, "Coût idle (jour)",    "IDLE_COST",       0.1, 3.0)
     add_float(t, 7, "Coût idle (nuit)",    "NIGHT_IDLE_COST", 0.1, 5.0)
+    section(t, 8, "Sommeil / fatigue")
+    add_int  (t, 9,  "Fatigue max",             "MAX_FATIGUE",              10, 200)
+    add_float(t, 10, "Fatigue par tick",        "FATIGUE_PER_TICK",         0.01, 2.0)
+    add_float(t, 11, "Fatigue en marchant",     "FATIGUE_MOVE_EXTRA",       0.0, 2.0)
+    add_float(t, 12, "Récupération en dormant","FATIGUE_REST_RECOVERY",    0.05, 5.0)
+    add_float(t, 13, "Énergie regagnée (dodo)","SLEEP_ENERGY_REGEN",       0.0, 5.0)
+    add_float(t, 14, "Seuil de fatigue (nuit)","SLEEP_FATIGUE_THRESHOLD",  0.0, 100.0, 1.0)
 
     # ── Onglet 3 : Soif ──────────────────────────────────────────
     t = make_tab(nb, "💧 Soif")
@@ -162,6 +195,19 @@ def run_config_gui():
     add_int  (t, 12, "Gain (forêt)",         "_FOOD_FOREST_GAIN",      1, 100)
     add_float(t, 13, "Respawn (forêt)",      "_FOOD_FOREST_RESPAWN",   0.001, 0.05, 0.001)
     add_int  (t, 14, "Capacité (forêt)",     "_FOOD_FOREST_CAP",       1, 20)
+    section(t, 15, "Pourriture")
+    add_int  (t, 16, "Ticks avant pourriture","FOOD_FRESH_TICKS",      10, 5000)
+    add_int  (t, 17, "Durée de la pourriture","FOOD_ROT_TICKS",       10, 5000)
+    add_float(t, 18, "Fraîcheur minimale",    "FOOD_MIN_FRESHNESS",   0.0, 1.0)
+    add_float(t, 19, "Chance de disparition", "FOOD_ROT_DISAPPEAR_CHANCE", 0.0, 0.05, 0.0005)
+    add_float(t, 20, "Pourri dans l'inventaire","FOOD_INVENTORY_ROT_RATE", 0.0, 0.01, 0.0001)
+    add_int  (t, 21, "Pousse tous les N ticks", "FOOD_GROWTH_INTERVAL", 1, 20)
+    add_float(t, 22, "Repousse déjà pourrie", "FOOD_SPOIL_ON_GROWTH_CHANCE", 0.0, 0.5, 0.01)
+    section(t, 23, "Maladie (nourriture pourrie)")
+    add_float(t, 24, "Seuil de fraîcheur",     "FOOD_SICKNESS_THRESHOLD", 0.0, 1.0)
+    add_float(t, 25, "Chance de tomber malade","SICKNESS_CHANCE",         0.0, 1.0)
+    add_int  (t, 26, "Durée de la maladie",    "SICKNESS_DURATION",      10, 1000)
+    add_float(t, 27, "Énergie perdue / tick",  "SICKNESS_ENERGY_DRAIN",  0.0, 5.0)
 
     # ── Onglet 5 : Jour/Nuit ─────────────────────────────────────
     t = make_tab(nb, "🌙 Jour/Nuit")
@@ -180,6 +226,23 @@ def run_config_gui():
     add_float(t, 3, "Humidité initiale",          "SOIL_MOISTURE_INIT",  0.1, 1.0)
     add_float(t, 4, "Humidité min",               "SOIL_MOISTURE_MIN",   0.0, 0.5)
     add_float(t, 5, "Humidité max",               "SOIL_MOISTURE_MAX",   0.5, 1.0)
+
+    # ── Onglet : Catastrophes naturelles ─────────────────────────
+    t = make_tab(nb, "🔥 Catastrophes")
+    section(t, 0, "Feux de forêt (météo + saison)")
+    add_float(t, 1,  "Chance de départ",        "FIRE_IGNITION_CHANCE", 0.0, 0.02, 0.0001)
+    add_float(t, 2,  "Chance de propagation",   "FIRE_SPREAD_CHANCE",   0.0, 1.0, 0.01)
+    add_int  (t, 3,  "Durée de combustion",     "FIRE_BURN_DURATION",   5, 200)
+    add_int  (t, 4,  "Durée de la cendre",      "FIRE_ASH_DURATION",    50, 2000)
+    add_float(t, 5,  "Dégâts aux agents",       "FIRE_DAMAGE",          0.0, 50.0, 1.0)
+    add_int  (t, 6,  "Feux simultanés max",     "FIRE_MAX_ACTIVE",      10, 2000)
+    section(t, 7, "Inondations (pluie / tempête)")
+    add_float(t, 8,  "Chance sous la pluie",    "FLOOD_CHANCE_RAIN",    0.0, 0.2, 0.001)
+    add_float(t, 9,  "Chance sous la tempête",  "FLOOD_CHANCE_STORM",   0.0, 0.2, 0.001)
+    add_int  (t, 10, "Cases par crue",          "FLOOD_CELLS_PER_EVENT", 1, 20)
+    add_int  (t, 11, "Durée d'une crue",        "FLOOD_DURATION",       10, 1000)
+    add_int  (t, 12, "Cases inondées max",      "FLOOD_MAX_CELLS",      10, 1000)
+    add_int  (t, 13, "Rayon de recherche",      "FLOOD_RADIUS",         1, 30)
 
     # ── Onglet 7 : Migration ─────────────────────────────────────
     t = make_tab(nb, "🚶 Migration")
@@ -235,11 +298,16 @@ def run_config_gui():
     add_module(t, 9, "💀 Mort de vieillesse",                 "ENABLE_AGE_DEATH")
     add_module(t, 10, "💬 Communication (lettres)",           "ENABLE_COMMUNICATION")
     add_module(t, 11, "⛰ Altitude (ombrage du relief)",       "ENABLE_ALTITUDE")
+    add_module(t, 12, "😴 Sommeil / fatigue",                 "ENABLE_FATIGUE")
+    add_module(t, 13, "🥫 Nourriture qui pourrit",            "ENABLE_FOOD_ROT")
+    add_module(t, 14, "🤒 Maladie (nourriture pourrie)",      "ENABLE_SICKNESS", "Pourriture")
+    add_module(t, 15, "🔥 Feux de forêt",                     "ENABLE_FIRES",   "Biomes")
+    add_module(t, 16, "🌊 Inondations",                       "ENABLE_FLOODS",  "Météo")
 
 
-    section(t, 13, "Logs")
+    section(t, 18, "Logs")
     tk.Label(t, text="Niveau de log", bg=BG, fg=FG,
-            font=("Arial", 10)).grid(row=14, column=0, sticky="w", padx=20, pady=6)
+            font=("Arial", 10)).grid(row=19, column=0, sticky="w", padx=20, pady=6)
     log_level_var = tk.StringVar(value=config.LOG_LEVEL)
     for i, (level, desc) in enumerate([
         ("DEBUG",   "tout logger (actions, perceptions...)"),
@@ -252,17 +320,28 @@ def run_config_gui():
             variable=log_level_var, value=level,
             bg=BG, fg=FG, activebackground=BG, selectcolor="#333355",
             font=("Arial", 9), anchor="w",
-        ).grid(row=15+i, column=0, columnspan=2, sticky="w", padx=30, pady=2)
+        ).grid(row=20+i, column=0, columnspan=2, sticky="w", padx=30, pady=2)
         
     # Dépendances automatiques en cascade
     def on_biomes_toggle(*_):
         if not module_vars["ENABLE_BIOMES"].get():
-            for attr in ("ENABLE_THIRST", "ENABLE_WEATHER", "ENABLE_SEASONS"):
+            for attr in ("ENABLE_THIRST", "ENABLE_WEATHER", "ENABLE_SEASONS",
+                         "ENABLE_FIRES", "ENABLE_FLOODS"):
                 module_vars[attr].set(False)
 
     def on_seasons_toggle(*_):
         if not module_vars["ENABLE_SEASONS"].get():
             module_vars["ENABLE_WEATHER"].set(False)
+
+    def on_weather_toggle(*_):
+        if not module_vars["ENABLE_WEATHER"].get():
+            module_vars["ENABLE_FLOODS"].set(False)
+
+    def on_food_rot_toggle(*_):
+        if not module_vars["ENABLE_FOOD_ROT"].get():
+            # Sans pourriture, la nourriture n'est jamais assez vieille pour
+            # rendre malade : on coupe aussi la maladie.
+            module_vars["ENABLE_SICKNESS"].set(False)
 
     def on_altitude_toggle(*_):
         if not module_vars["ENABLE_ALTITUDE"].get():
@@ -272,6 +351,8 @@ def run_config_gui():
 
     module_vars["ENABLE_BIOMES"].trace_add("write", on_biomes_toggle)
     module_vars["ENABLE_SEASONS"].trace_add("write", on_seasons_toggle)
+    module_vars["ENABLE_WEATHER"].trace_add("write", on_weather_toggle)
+    module_vars["ENABLE_FOOD_ROT"].trace_add("write", on_food_rot_toggle)
     module_vars["ENABLE_ALTITUDE"].trace_add("write", on_altitude_toggle)
 
     def on_infinite_toggle(*_):
@@ -416,7 +497,11 @@ def run_config_gui():
             elif typ == "bool":
                 setattr(config, attr, bool(var.get()))
 
-        config.FOOD_TYPES = {
+        # On part de la table existante et on ne remplace que les trois biomes
+        # réglables ici : les autres entrées (cendre fertile des incendies...)
+        # seraient sinon perdues au lancement.
+        food_types = dict(config.FOOD_TYPES)
+        food_types.update({
             config.BIOME_DESERT:  dict(
                 gain     = int(fields["_FOOD_DESERT_GAIN"][1].get()),
                 respawn  = float(fields["_FOOD_DESERT_RESPAWN"][1].get()),
@@ -435,7 +520,8 @@ def run_config_gui():
                 capacity = int(fields["_FOOD_FOREST_CAP"][1].get()),
                 color    = config.FOOD_TYPES[config.BIOME_FOREST]["color"],
             ),
-        }
+        })
+        config.FOOD_TYPES = food_types
 
         config.YEAR_DURATION  = config.SEASON_DURATION * 4
         config.ALPHABET       = list("ABCDEFGHIJ")[:config.ALPHABET_SIZE]

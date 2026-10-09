@@ -1,6 +1,7 @@
 import random
 
 import config
+import pytest
 from food import FoodSystem
 
 
@@ -85,20 +86,19 @@ class TestConsumeFood:
         food = FoodSystem(width=1, height=1)
         assert food.consume_food(biome_map, (0, 0)) == 0
 
-    def test_known_quirk_orphan_food_after_biome_change_is_not_removed(self):
-        """Documente un comportement existant, potentiellement surprenant :
-        si une case avait de la nourriture puis devient de l'eau (tempête),
-        consume_food() ne trouve plus le biome dans FOOD_TYPES et rend 0
-        SANS retirer la nourriture fantôme du food_map. Ce test fige ce
-        comportement pour qu'un changement futur soit conscient et volontaire,
-        pas une régression silencieuse."""
+    def test_orphan_food_after_biome_change_is_removed(self):
+        """La nourriture dont le biome a changé (inondation, incendie...)
+        n'est plus un fantôme : consume_food() la retire du food_map et
+        renvoie 0. Sinon elle réapparaîtrait si le biome d'origine revenait
+        (décrue), avec une fraîcheur/quantité incohérente."""
         biome_map = {(0, 0): config.BIOME_WATER}
         food = FoodSystem(width=1, height=1)
         food.food_map[(0, 0)] = 5
         food.food_positions.add((0, 0))
         gain = food.consume_food(biome_map, (0, 0))
         assert gain == 0
-        assert food.food_map[(0, 0)] == 5  # <- toujours là, "orpheline"
+        assert food.food_map[(0, 0)] == 0
+        assert (0, 0) not in food.food_positions
 
 
 class TestGrowFood:
@@ -149,7 +149,9 @@ class TestGrowFood:
         # Sans eau adjacente : moisture=0.1 -> growth faible.
         # Avec eau adjacente : +0.3 -> growth plus élevée.
         # On fixe random.random() juste entre les deux pour observer la
-        # différence de comportement.
+        # différence de comportement. (Intervalle de pousse ramené à 1 pour
+        # garder des probabilités identiques au modèle historique.)
+        config.FOOD_GROWTH_INTERVAL = 1
         respawn = config.FOOD_TYPES[config.BIOME_PRAIRIE]["respawn"]
         growth_without_water = respawn * 0.1
         growth_with_water = respawn * min(1.0, 0.1 + 0.3)
@@ -177,11 +179,107 @@ class TestClearPosition:
         food.clear_position((0, 0))
         assert food.food_map[(0, 0)] == 0
         assert (0, 0) not in food.food_positions
+        assert (0, 0) not in food.food_age
 
     def test_noop_on_empty_position(self):
         food = FoodSystem(width=1, height=1)
         food.clear_position((0, 0))  # ne doit pas lever
         assert food.food_map.get((0, 0), 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pourriture
+# ---------------------------------------------------------------------------
+class TestFreshness:
+    def test_fresh_below_fresh_ticks(self):
+        from food import freshness_for_age
+        assert freshness_for_age(0) == 1.0
+        assert freshness_for_age(config.FOOD_FRESH_TICKS) == 1.0
+
+    def test_decreases_linearly_after_fresh_ticks(self):
+        from food import freshness_for_age
+        mid = config.FOOD_FRESH_TICKS + config.FOOD_ROT_TICKS // 2
+        expected = 1.0 - (1.0 - config.FOOD_MIN_FRESHNESS) * 0.5
+        assert abs(freshness_for_age(mid) - expected) < 0.01
+
+    def test_never_below_min_freshness(self):
+        from food import freshness_for_age
+        assert freshness_for_age(10 ** 9) == config.FOOD_MIN_FRESHNESS
+
+
+class TestUpdateRot:
+    def test_food_ages_every_tick(self):
+        food = FoodSystem(width=2, height=1)
+        food.food_map[(0, 0)] = 1
+        food.food_positions.add((0, 0))
+        food.update_rot()
+        food.update_rot()
+        assert food.food_age[(0, 0)] == 2
+
+    def test_disabled_rot_does_not_age_food(self):
+        config.ENABLE_FOOD_ROT = False
+        food = FoodSystem(width=2, height=1)
+        food.food_map[(0, 0)] = 1
+        food.food_positions.add((0, 0))
+        food.update_rot()
+        assert food.food_age.get((0, 0)) in (None, 0)
+
+    def test_spoiled_food_can_disappear(self, monkeypatch):
+        food = FoodSystem(width=2, height=1)
+        food.food_map[(0, 0)] = 3
+        food.food_positions.add((0, 0))
+        food.food_age[(0, 0)] = config.FOOD_FRESH_TICKS + config.FOOD_ROT_TICKS
+        monkeypatch.setattr(random, "random", lambda: 0.0)  # < chance de disparition
+        food.update_rot()
+        assert food.food_map[(0, 0)] == 0
+        assert (0, 0) not in food.food_positions
+
+    def test_spoiled_food_can_survive_a_tick(self, monkeypatch):
+        food = FoodSystem(width=2, height=1)
+        food.food_map[(0, 0)] = 3
+        food.food_positions.add((0, 0))
+        food.food_age[(0, 0)] = config.FOOD_FRESH_TICKS + config.FOOD_ROT_TICKS
+        monkeypatch.setattr(random, "random", lambda: 0.999999)  # > chance
+        food.update_rot()
+        assert food.food_map[(0, 0)] == 3
+
+    def test_freshness_at_uses_age(self):
+        food = FoodSystem(width=2, height=1)
+        food.food_map[(0, 0)] = 1
+        food.food_positions.add((0, 0))
+        assert food.freshness_at((0, 0)) == 1.0
+        food.food_age[(0, 0)] = config.FOOD_FRESH_TICKS + config.FOOD_ROT_TICKS
+        assert food.freshness_at((0, 0)) == pytest.approx(config.FOOD_MIN_FRESHNESS)
+        assert food.freshness_at((9, 9)) == 1.0
+
+    def test_new_growth_resets_age_on_empty_cell(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.999)  # pas de repousse pourrie
+        food = FoodSystem(width=1, height=1)
+        food.food_age[(0, 0)] = 1234
+        food._add_food((0, 0))
+        assert food.food_age[(0, 0)] == 0
+
+    def test_new_growth_can_be_born_rotten(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.0)  # < chance de naître pourrie
+        food = FoodSystem(width=1, height=1)
+        food._add_food((0, 0))
+        assert food.food_age[(0, 0)] == config.FOOD_FRESH_TICKS + config.FOOD_ROT_TICKS
+        assert food.freshness_at((0, 0)) <= 0.5
+
+    def test_initial_food_never_starts_rotten(self, monkeypatch):
+        monkeypatch.setattr(random, "random", lambda: 0.0)  # forcerait la pourriture
+        biome_map = {(x, y): config.BIOME_PRAIRIE for x in range(5) for y in range(5)}
+        food = FoodSystem(width=5, height=5)
+        food.initialize(biome_map)
+        assert all(age == 0 for age in food.food_age.values())
+
+    def test_regrowth_keeps_age_on_nonempty_cell(self):
+        food = FoodSystem(width=1, height=1)
+        food.food_map[(0, 0)] = 1
+        food.food_positions.add((0, 0))
+        food.food_age[(0, 0)] = 50
+        food._add_food((0, 0))
+        assert food.food_age[(0, 0)] == 50
 
 
 class TestIterFood:

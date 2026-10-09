@@ -1,14 +1,19 @@
 import random
 
-from policy_registry import REGISTRY, make_policy, policy_name, distribute_policies
+from policy_registry import (
+    REGISTRY, default_policy_name, make_policy, policy_name, distribute_policies,
+)
 from policy import HardcodedPolicy, RandomPolicy, BasePolicy
 
 from tests.conftest import make_agent
 
 
 class TestRegistryContents:
-    def test_registry_has_expected_entries(self):
-        assert set(REGISTRY.keys()) == {"Hardcoded", "Random"}
+    def test_registry_contains_builtin_policies(self):
+        # Sous-ensemble et non égalité exacte : ajouter une IA au REGISTRY
+        # (le moyen documenté d'intégrer un modèle) ne doit pas casser la
+        # suite de tests.
+        assert {"Hardcoded", "Random"} <= set(REGISTRY.keys())
 
     def test_each_entry_has_class_description_and_color(self):
         for entry in REGISTRY.values():
@@ -69,3 +74,15 @@ class TestDistributePolicies:
 
     def test_empty_agent_list_does_not_raise(self):
         distribute_policies([], {"Hardcoded": 1.0})  # ne doit pas lever
+
+    def test_unknown_policy_names_are_ignored(self):
+        # Une policy retirée du registre ne doit pas faire planter la
+        # distribution : elle est ignorée au profit des noms valides.
+        agents = [make_agent(id=i) for i in range(4)]
+        distribute_policies(agents, {"PolicyRetirée": 1.0, "Hardcoded": 0.5})
+        assert all(isinstance(a.policy, HardcodedPolicy) for a in agents)
+
+    def test_distribution_with_only_unknown_names_falls_back_to_default(self):
+        agents = [make_agent(id=0)]
+        distribute_policies(agents, {"PolicyRetirée": 1.0})
+        assert policy_name(agents[0].policy) == default_policy_name()
